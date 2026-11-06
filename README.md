@@ -1,4 +1,43 @@
-# Geometry Whiteboard — Argon v4.9
+# Geometry Whiteboard — Argon v4.10
+
+## v4.10 — what is new (6 fixes + 3D shapes, built on v4.9)
+1. **Right-drag marquee-select in Select** — a right-button drag in Select
+   mode now draws a dashed marquee box and selects everything inside it
+   (frames, shapes, 3D shapes, images, texts, lines, strokes), whether the
+   drag started inside or outside a frame. A plain right-click still opens
+   the frame menu. Panning stays on middle button / Space+drag / two-finger
+   drag; right-drag in other tools (or for students) still pans.
+2. **Pen thickness is a slider (1–20 px, default 4)** with a live px
+   readout, replacing the Fine / Medium / Bold buttons. Highlighter still
+   draws at penWidth × 4.2. Per-device, new strokes only.
+3. **Pen dot cursor follows the thickness** — dot diameter = stroke width
+   × 2, capped at 32px (default 4 px → 8px, as before); highlighter × 4.2.
+   Colour still follows the theme.
+4. **Compass: no automatic circle, thickness follows the slider** — adding
+   the compass no longer draws a faint locus circle; a circle appears only
+   when swung or via "Draw Compass Circle", and that circle's thickness now
+   follows the pen Thickness slider. Compass colour still borrows the pen
+   colour (no separate control).
+5. **Ruler selection outline uses the ruler's own pivot** (top-left corner,
+   not the bounds centre), so the dashed box sits exactly on the ruler at
+   any angle; the protractor uses its centre pin.
+6. **Text box stays open** — the canvas mousedown now prevents the default
+   focus move, so the editor no longer blurs shut the instant it opens;
+   type, then click away or press Esc.
+7. **3D shapes (🧊 in the left toolbar, between Instruments and Text
+   box)** — 8 shapes: Cube, Cuboid, Cylinder, Cone, Sphere, Hemisphere,
+   Rectangular prism, Square prism. Tap one to place it at the centre of
+   the view. Isometric render with dashed hidden edges and vertex labels
+   (A, B, C…) while selected. A floating toolbar under the selected shape
+   has an **Open slider** (drag right to unfold into the net bit by bit,
+   drag left to close — a real hinge fold, so faces never bowtie),
+   **face-by-face colouring** (tap a colour, tap a face), a **Net** picker
+   with all 11 nets for cube/cuboid/prisms (labelled 1-4-1 / 2-3-1 / 2-2-2
+   / 3-3), **Clone** and **Delete**. Sphere and hemisphere cannot unfold
+   (no slider). Rotate handle spins the shape around its vertical axis;
+   corner handles scale it. 3D shapes sync over Broadcast and persist
+   through cloud save / snapshots / undo / backup, like 2D shapes.
+   Known limit: the frames-only PDF export does not draw 3D shapes yet.
 
 ## v4.9 — what is new (1 fix, built on v4.8)
 1. **Mouse wheel finally zooms (burst-aware detection)** — v4.8 read one wheel

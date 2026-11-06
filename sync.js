@@ -297,6 +297,7 @@
       const BOARD_MUTATION_EVENTS = new Set([
         'stroke_add', 'stroke_update',
         'shape_add', 'shape_update',
+        'shape3d_add', 'shape3d_update', // v4.10: 3D shapes
         'line_add', 'line_update',
         'frame_add', 'frame_update',
         'image_add', 'image_update', 'image_meta', 'image_chunk',

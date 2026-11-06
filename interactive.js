@@ -87,6 +87,7 @@
       }
     ],
     shapes: [],
+    shapes3d: [], // v4.10: {id, kind, x, y (centre, world px), size, azimuth, openT, netIndex, faceColors, rotation:0}
     texts: [], // v4: {id, type:'text', x, y, w, h, rotation, text, color, fontSize}
     lines: [],
     images: [], // v3: {id, type:'image', x, y, w, h, rotation, src (compressed data URL)}
@@ -203,7 +204,8 @@
   }
   function serializeBoard() {
     return JSON.parse(JSON.stringify({
-      frames: board.frames, shapes: board.shapes, texts: board.texts || [],
+      frames: board.frames, shapes: board.shapes, shapes3d: board.shapes3d || [],
+      texts: board.texts || [],
       lines: board.lines, images: board.images, strokes: board.strokes,
       instruments: board.instruments
     }));
@@ -214,6 +216,7 @@
     if (Array.isArray(st.frames)) board.frames = st.frames;
     ensureFrameSeqs(); // v4.8: frames from cloud / snapshot / an old version may lack a number
     if (Array.isArray(st.shapes)) board.shapes = st.shapes;
+    if (Array.isArray(st.shapes3d)) board.shapes3d = st.shapes3d; // v4.10
     if (Array.isArray(st.texts)) board.texts = st.texts;
     if (Array.isArray(st.lines)) board.lines = st.lines;
     if (Array.isArray(st.images)) board.images = st.images;
@@ -724,7 +727,7 @@
     const { url, key, room } = cloudCreds();
     saveCurrentTabState();
     const fresh = serializeBoard();
-    fresh.frames = []; fresh.shapes = []; fresh.texts = []; fresh.lines = []; fresh.images = []; fresh.strokes = [];
+    fresh.frames = []; fresh.shapes = []; fresh.shapes3d = []; fresh.texts = []; fresh.lines = []; fresh.images = []; fresh.strokes = [];
     fresh.instruments.protractor.visible = false; fresh.instruments.ruler.visible = false; fresh.instruments.compass.visible = false;
     pushHistory();
     applyBoardState(fresh);
@@ -879,6 +882,7 @@
   function findObject(category, id) {
     if (category === 'frame') return board.frames.find((f) => f.id === id) || null;
     if (category === 'shape') return board.shapes.find((s) => s.id === id) || null;
+    if (category === 'shape3d') return (board.shapes3d || []).find((s) => s.id === id) || null; // v4.10
     if (category === 'image') return board.images.find((im) => im.id === id) || null;
     if (category === 'line') return board.lines.find((l) => l.id === id) || null;
     if (category === 'stroke') return board.strokes.find((st) => st.id === id) || null;
@@ -941,6 +945,7 @@
 
   function getObjectBounds(category, obj) {
     if (!obj) return null;
+    if (category === 'shape3d') return shape3dBounds(obj); // v4.10
     if (category === 'frame' || category === 'shape' || category === 'image' || category === 'text') {
       return {
         x: obj.x,
@@ -1188,7 +1193,7 @@
     const local = b.rotation ? unrotatePoint(wx, wy, cx, cy, b.rotation) : { x: wx, y: wy };
 
     // Rotation handle (top center - 26px)
-    if (selectedObject.category === 'shape' || selectedObject.category === 'image' || selectedObject.category === 'text' || selectedObject.category === 'instrument') {
+    if (selectedObject.category === 'shape' || selectedObject.category === 'shape3d' || selectedObject.category === 'image' || selectedObject.category === 'text' || selectedObject.category === 'instrument') {
       if (dist(local.x, local.y, cx, b.y - 26 / viewport.zoom) <= handleR * 1.3) {
         return { handle: 'rotate', obj, bounds: b };
       }
@@ -1198,6 +1203,7 @@
     if (
       selectedObject.category === 'frame' ||
       selectedObject.category === 'shape' ||
+      selectedObject.category === 'shape3d' ||
       selectedObject.category === 'image' ||
       selectedObject.category === 'text' ||
       (selectedObject.category === 'stroke' && obj.kind === 'circle')
@@ -1291,6 +1297,14 @@
       }
     }
 
+    // 3c. 3D shapes (v4.10) — face-polygon hit test, top-most first
+    for (let i = (board.shapes3d || []).length - 1; i >= 0; i--) {
+      const s3 = board.shapes3d[i];
+      if (hitShape3dFace(s3, wx - s3.x, wy - s3.y)) {
+        return { category: 'shape3d', id: s3.id, obj: s3 };
+      }
+    }
+
     // 4. Frames (prefer header bar or border, or body if clicked in Select mode)
     for (let i = board.frames.length - 1; i >= 0; i--) {
       const fr = board.frames[i];
@@ -1334,7 +1348,7 @@
       r: rPx,
       rCm: Number(rCm.toFixed(2)),
       color: comp.color || uiState.penColor || '#dc2626',
-      width: 2.5,
+      width: uiState.penWidth, // v4.10: was a fixed 2.5 — now follows the Thickness slider
       label: 'r = ' + rCm.toFixed(1) + ' cm'
     };
     board.strokes.push(circleObj);
@@ -1438,6 +1452,13 @@
     for (const tx of (board.texts || [])) {
       drawTextObject(tx);
     }
+
+    // 5d. Draw 3D shapes (v4.10) — above 2D shapes/texts, below strokes
+    for (const s3 of (board.shapes3d || [])) {
+      drawShape3d(s3);
+    }
+    // Keep the floating 3D toolbar under the selected shape after each render.
+    positionShape3dControls();
 
     // 6. Draw Lines & Arrows
     for (const ln of board.lines) {
@@ -2127,16 +2148,11 @@
 
     ctx.save();
 
-    // Faint preview circle showing exact locus of the compass
-    ctx.save();
-    ctx.setLineDash([6, 6]);
-    ctx.strokeStyle = 'rgba(220, 38, 38, 0.35)';
-    ctx.lineWidth = 1.4;
-    ctx.beginPath();
-    ctx.arc(comp.nx, comp.ny, rPx, 0, Math.PI * 2);
-    ctx.stroke();
-
+    // v4.10: no locus circle — the compass used to draw a faint dashed circle
+    // the moment it appeared, which Rahul did not want. A circle appears only
+    // when he swings the compass or taps Draw Compass Circle.
     // Radius line between needle and pencil
+    ctx.save();
     ctx.strokeStyle = 'rgba(15, 23, 42, 0.35)';
     ctx.beginPath();
     ctx.moveTo(comp.nx, comp.ny);
@@ -2280,10 +2296,18 @@
 
     const cx = b.x + b.w / 2;
     const cy = b.y + b.h / 2;
+    // v4.10: rotate the overlay around the same pivot the object itself is
+    // drawn with. The ruler is drawn around its top-left corner and the
+    // protractor around its centre pin — rotating their overlay around the
+    // bounds centre put the dashed box in the wrong place (the "shadow"
+    // seen under the ruler). Shapes/frames/text keep the centre pivot.
+    let px = cx, py = cy;
+    if (sel.category === 'instrument' && obj.id === 'inst_ruler') { px = b.x; py = b.y; }
+    if (sel.category === 'instrument' && obj.id === 'inst_protractor') { px = obj.x; py = obj.y; }
     if (b.rotation) {
-      ctx.translate(cx, cy);
+      ctx.translate(px, py);
       ctx.rotate(b.rotation * DEG_TO_RAD);
-      ctx.translate(-cx, -cy);
+      ctx.translate(-px, -py);
     }
 
     ctx.setLineDash([6 / viewport.zoom, 4 / viewport.zoom]);
@@ -2291,7 +2315,7 @@
     ctx.setLineDash([]);
 
     // Rotation handle for shapes, images, text & instruments
-    if (sel.category === 'shape' || sel.category === 'image' || sel.category === 'text' || sel.category === 'instrument') {
+    if (sel.category === 'shape' || sel.category === 'shape3d' || sel.category === 'image' || sel.category === 'text' || sel.category === 'instrument') {
       const rotY = b.y - 26 / viewport.zoom;
       ctx.beginPath();
       ctx.moveTo(cx, b.y);
@@ -2309,6 +2333,7 @@
     if (
       (sel.category === 'frame' && !(obj && obj.locked)) ||
       sel.category === 'shape' ||
+      sel.category === 'shape3d' ||
       sel.category === 'image' ||
       sel.category === 'text' ||
       (sel.category === 'stroke' && obj.kind === 'circle')
@@ -2384,6 +2409,7 @@
     };
     for (const fr of board.frames) tryAdd('frame', fr);
     for (const sh of board.shapes) tryAdd('shape', sh);
+    for (const s3 of (board.shapes3d || [])) tryAdd('shape3d', s3); // v4.10
     for (const im of board.images) tryAdd('image', im);
     for (const tx of (board.texts || [])) tryAdd('text', tx);
     for (const ln of board.lines) tryAdd('line', ln);
@@ -2405,7 +2431,7 @@
     ctx.restore();
   }
   function setObjectFromOrig(category, obj, orig, dx, dy) {
-    if (category === 'frame' || category === 'shape' || category === 'image' || category === 'text') {
+    if (category === 'frame' || category === 'shape' || category === 'shape3d' || category === 'image' || category === 'text') {
       obj.x = orig.x + dx; obj.y = orig.y + dy;
     } else if (category === 'line') {
       obj.x1 = orig.x1 + dx; obj.y1 = orig.y1 + dy; obj.x2 = orig.x2 + dx; obj.y2 = orig.y2 + dy;
@@ -2418,7 +2444,7 @@
     }
   }
   function addObjectDelta(category, obj, dx, dy) {
-    if (category === 'frame' || category === 'shape' || category === 'image' || category === 'text') {
+    if (category === 'frame' || category === 'shape' || category === 'shape3d' || category === 'image' || category === 'text') {
       obj.x += dx; obj.y += dy;
     } else if (category === 'line') {
       obj.x1 += dx; obj.y1 += dy; obj.x2 += dx; obj.y2 += dy;
@@ -2892,6 +2918,22 @@
 
     // 3. Mode-specific handling
     if (uiState.activeTab === 'select' || uiState.activeTab === 'instruments') {
+      // v4.10: 3D fill mode — a colour is armed from the floating 3D toolbar;
+      // tapping a 3D face fills that face instead of moving the shape.
+      // The colour stays armed so several faces can be coloured in a row.
+      if (s3dFillColor) {
+        const face = hitShape3dFaceAt(wx, wy);
+        if (face) {
+          pushHistory();
+          face.obj.faceColors = face.obj.faceColors || {};
+          face.obj.faceColors[face.name] = s3dFillColor;
+          window.BoardSync.send('shape3d_update', face.obj);
+          scheduleCloudSave();
+          updateReadouts();
+          requestRender();
+          return;
+        }
+      }
       // Check selection handles on currently selected object (not for a multi-selection: drag moves it)
       const handleHit = multiActive ? null : hitTestSelectionHandles(wx, wy);
       // v4.3: a locked frame has no handles to grab — ignore handle hits on it.
@@ -3162,7 +3204,20 @@
     if (interaction.type === 'marquee') {
       interaction.curWx = wx;
       interaction.curWy = wy;
-      marquee = { x1: interaction.startWx, y1: interaction.startWy, x2: wx, y2: wy };
+      // v4.10: a right-button marquee stays PENDING (no selection cleared, no
+      // box shown) until the drag passes 6 px — a plain right-click must leave
+      // the selection untouched and still open the frame menu.
+      if (interaction.rightButton) {
+        if (Math.hypot(wx - interaction.startWx, wy - interaction.startWy) > 6) {
+          if (!interaction.moved) {
+            interaction.moved = true;
+            selectedObject = null; multiActive = false; multiSelection = [];
+          }
+          marquee = { x1: interaction.startWx, y1: interaction.startWy, x2: wx, y2: wy };
+        }
+      } else {
+        marquee = { x1: interaction.startWx, y1: interaction.startWy, x2: wx, y2: wy };
+      }
       requestRender();
       return;
     }
@@ -3347,7 +3402,7 @@
       const obj = interaction.obj;
       const orig = interaction.origObj;
 
-      if (interaction.category === 'frame' || interaction.category === 'shape' || interaction.category === 'image' || interaction.category === 'text') {
+      if (interaction.category === 'frame' || interaction.category === 'shape' || interaction.category === 'shape3d' || interaction.category === 'image' || interaction.category === 'text') {
         obj.x = orig.x + dx;
         obj.y = orig.y + dy;
         // v4.3: magnetic snapping, frames only; Alt held disables it for this drag.
@@ -3417,6 +3472,16 @@
       const cy = b.y + b.h / 2;
 
       if (h === 'rotate') {
+        if (interaction.category === 'shape3d') {
+          // v4.10: the rotate handle spins the 3D shape around its vertical
+          // axis (azimuth), so the teacher can show it from another side.
+          const startAng = Math.atan2(interaction.startWy - cy, interaction.startWx - cx);
+          const curAng = Math.atan2(wy - cy, wx - cx);
+          obj.azimuth = (orig.azimuth || 0) + (curAng - startAng);
+          window.BoardSync.send('shape3d_update', obj, 40);
+          requestRender();
+          return;
+        }
         const ang = Math.atan2(wy - cy, wx - cx) * RAD_TO_DEG + 90;
         obj.rotation = ang;
         if (interaction.category === 'instrument') {
@@ -3428,6 +3493,17 @@
           // v4.7: image rotate sends geometry only (see updatePayloadFor)
           window.BoardSync.send(interaction.category + '_update', updatePayloadFor(interaction.category, obj), 40);
         }
+        requestRender();
+        return;
+      }
+
+      // v4.10: 3D shapes scale uniformly — dragging a corner changes `size`.
+      if (interaction.category === 'shape3d') {
+        const origSize = orig.size || 150;
+        const origDist = Math.max(20, dist(interaction.startWx, interaction.startWy, cx, cy));
+        const curDist = Math.max(20, dist(wx, wy, cx, cy));
+        obj.size = Math.max(40, Math.min(600, origSize * curDist / origDist));
+        window.BoardSync.send('shape3d_update', obj, 40);
         requestRender();
         return;
       }
@@ -3566,6 +3642,9 @@
     // v4.4: marquee released — select everything whose bounds intersect the box.
     if (act.type === 'marquee') {
       marquee = null;
+      // v4.10: a right-button marquee that never moved is a right-click — the
+      // selection stays exactly as it was (the frame menu opens from mouseup).
+      if (act.rightButton && !act.moved) { updateReadouts(); requestRender(); return; }
       const rx1 = Math.min(act.startWx, act.curWx), ry1 = Math.min(act.startWy, act.curWy);
       const rx2 = Math.max(act.startWx, act.curWx), ry2 = Math.max(act.startWy, act.curWy);
       if (Math.abs(act.curWx - act.startWx) < 10 && Math.abs(act.curWy - act.startWy) < 10) {
@@ -3768,10 +3847,22 @@
         // Right-drag pan, in drag direction, regardless of active tool (except while editing text).
         // v4.3: a right press that barely moves is a right-CLICK (frame menu), not a pan.
         if (textEditor) commitTextEditor();
+        // v4.10: in Select (teacher only), a right-button drag marquees instead
+        // of panning — it selects frames + writings whether it starts inside or
+        // outside a frame. Students and other tools keep the right-drag pan.
+        if (isTeacher() && uiState.activeTab === 'select') {
+          const world = screenToWorld(sx, sy);
+          interaction = { type: 'marquee', rightButton: true, moved: false, startWx: world.x, startWy: world.y, curWx: world.x, curWy: world.y };
+          return;
+        }
         interaction = { type: 'pan', rightButton: true, moved: false, startSx: sx, startSy: sy, origPanX: viewport.panX, origPanY: viewport.panY };
         return;
       }
       if (e.button !== 0 && e.button !== 1) return;
+      // v4.10: stop the browser's default focus move — it blurred the text
+      // editor the instant it opened, so the box vanished before typing.
+      // Keyboard shortcuts live on window, so this is safe for the canvas.
+      e.preventDefault();
       startPointerInteraction(sx, sy, e.button === 1);
     });
 
@@ -3784,7 +3875,9 @@
 
     window.addEventListener('mouseup', (e) => {
       // v4.3: right-click = right press that did not drag; open the frame menu at the cursor.
-      const wasRightClick = !!(interaction && interaction.type === 'pan' && interaction.rightButton && !interaction.moved);
+      // v4.10: a right-click is a right press that did not drag, whatever the
+      // interaction type — in Select it is a marquee that never moved, not a pan.
+      const wasRightClick = !!(interaction && interaction.rightButton && !interaction.moved);
       if (interaction) endPointerInteraction();
       if (wasRightClick && isTeacher()) openFrameMenu(e.clientX, e.clientY); // v4.8: students get no frame menu
     });
@@ -3997,12 +4090,1094 @@
   }
 
   // v4.8: CSS has no dot cursor, so the pen dot is a tiny SVG data-URL
-  // cursor (8px dot, hotspot at its centre). Colour follows the theme.
+  // cursor. Colour follows the theme.
+  // v4.10: the dot follows the thickness — diameter = active stroke width x 2
+  // (default penWidth 4 -> 8px dot, as before), capped at 32px. The highlighter
+  // uses penWidth x 4.2, measure uses penWidth; the eraser keeps the 8px dot.
   function penDotCursor() {
     const color = currentTheme === 'dark' ? '#ffffff' : '#000000';
-    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><circle cx='8' cy='8' r='4.5' fill='" + color + "'/></svg>";
-    return 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '") 8 8, crosshair';
+    let w = uiState.penWidth || 4;
+    if (uiState.penSubTool === 'highlighter') w = w * 4.2;
+    if (uiState.penSubTool === 'eraser') w = 4;
+    const d = Math.max(4, Math.min(32, Math.round(w * 2)));
+    const size = d + 8;
+    const c = size / 2;
+    const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='" + size + "' height='" + size + "'><circle cx='" + c + "' cy='" + c + "' r='" + (d / 2) + "' fill='" + color + "'/></svg>";
+    return 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '") ' + c + ' ' + c + ', crosshair';
   }
+
+  // ---------------------------------------------------------
+  // v4.10 3D SHAPES — geometry (pure functions only: no DOM,
+  // canvas or board-state references, so shape3d-test.js can
+  // extract this block verbatim and run it in Node).
+  // @s3d-geometry-start
+  const S3D = (function () {
+    'use strict';
+    var COS30 = 0.8660254037844386;
+    var SIN30 = 0.5;
+    var TAU = Math.PI * 2;
+
+    var OPPOSITE = { F: 'B', B: 'F', L: 'R', R: 'L', T: 'Bo', Bo: 'T' };
+    function facesAdjacent(a, b) { return a !== b && OPPOSITE[a] !== b; }
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function smooth(t) { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); }
+    function mod(n, m) { return ((n % m) + m) % m; }
+    function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+    function dot3(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+    function norm3(a) { var l = Math.sqrt(dot3(a, a)) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+    function dist3(a, b) { var dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2]; return Math.sqrt(dx * dx + dy * dy + dz * dz); }
+    function samePt(a, b) { return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6 && Math.abs(a[2] - b[2]) < 1e-6; }
+
+    // Isometric projection of a shape-local 3D point (y up, origin centre).
+    // az = rotation around the vertical (Y) axis.
+    function project(x, y, z, az) {
+      var c = Math.cos(az), s = Math.sin(az);
+      var xr = x * c + z * s;
+      var zr = -x * s + z * c;
+      return { x: (xr - zr) * COS30, y: (xr + zr) * SIN30 - y };
+    }
+    // A face is visible when its outward normal points toward the viewer
+    // (view direction (1, 1, 1) in this projection).
+    function normalVisible(nx, ny, nz, az) {
+      var c = Math.cos(az), s = Math.sin(az);
+      var rx = nx * c + nz * s;
+      var rz = -nx * s + nz * c;
+      return (rx + ny + rz) > 0.001;
+    }
+    function pointInPoly(px, py, poly) {
+      var inside = false;
+      for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        var xi = poly[i][0], yi = poly[i][1];
+        var xj = poly[j][0], yj = poly[j][1];
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+      }
+      return inside;
+    }
+
+    // Rotate vector v around unit axis k by angle a (Rodrigues' formula).
+    function rotVec(v, k, a) {
+      var c = Math.cos(a), s = Math.sin(a);
+      var dot = v[0] * k[0] + v[1] * k[1] + v[2] * k[2];
+      var cr = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
+      return [
+        v[0] * c + cr[0] * s + k[0] * dot * (1 - c),
+        v[1] * c + cr[1] * s + k[1] * dot * (1 - c),
+        v[2] * c + cr[2] * s + k[2] * dot * (1 - c)
+      ];
+    }
+    // Rotate point p around the line through a and b by angle a.
+    function rotPointAroundLine(p, a, b, angle) {
+      var axis = norm3([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+      var d = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+      var r = rotVec(d, axis, angle);
+      return [a[0] + r[0], a[1] + r[1], a[2] + r[2]];
+    }
+
+    // Order 4 corners cyclically, clockwise as seen on screen (y down)
+    // from outside the solid. (u = screen right, v = screen down, u x v = -normal.)
+    function orderFaceVerts(corners, normal) {
+      var cx = 0, cy = 0, cz = 0, i;
+      for (i = 0; i < corners.length; i++) { cx += corners[i][0]; cy += corners[i][1]; cz += corners[i][2]; }
+      cx /= corners.length; cy /= corners.length; cz /= corners.length;
+      var up = Math.abs(normal[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+      var u = norm3(cross(normal, up));
+      var v = norm3(cross(u, normal));
+      var pts = corners.map(function (p) {
+        var d = [p[0] - cx, p[1] - cy, p[2] - cz];
+        return { p: p, a: Math.atan2(dot3(d, v), dot3(d, u)) };
+      });
+      pts.sort(function (a, b) { return a.a - b.a; });
+      return pts.map(function (q) { return q.p; });
+    }
+
+    // ---- Box faces (cube / cuboid / rectangular & square prisms) ----
+    // Each face: { name, normal, verts (4 corners, cyclic), fw, fh }
+    // fw = length of edge v0->v1, fh = length of edge v1->v2.
+    function boxFaces(hl, hh, hw) {
+      var defs = [
+        { name: 'F', normal: [0, 0, 1], corners: [[-hl, -hh, hw], [hl, -hh, hw], [hl, hh, hw], [-hl, hh, hw]] },
+        { name: 'B', normal: [0, 0, -1], corners: [[hl, -hh, -hw], [-hl, -hh, -hw], [-hl, hh, -hw], [hl, hh, -hw]] },
+        { name: 'R', normal: [1, 0, 0], corners: [[hl, -hh, hw], [hl, -hh, -hw], [hl, hh, -hw], [hl, hh, hw]] },
+        { name: 'L', normal: [-1, 0, 0], corners: [[-hl, -hh, -hw], [-hl, -hh, hw], [-hl, hh, hw], [-hl, hh, -hw]] },
+        { name: 'T', normal: [0, 1, 0], corners: [[-hl, hh, hw], [hl, hh, hw], [hl, hh, -hw], [-hl, hh, -hw]] },
+        { name: 'Bo', normal: [0, -1, 0], corners: [[-hl, -hh, -hw], [hl, -hh, -hw], [hl, -hh, hw], [-hl, -hh, hw]] }
+      ];
+      return defs.map(function (d) {
+        var verts = orderFaceVerts(d.corners, d.normal);
+        return {
+          name: d.name, normal: d.normal, verts: verts,
+          fw: dist3(verts[0], verts[1]), fh: dist3(verts[1], verts[2])
+        };
+      });
+    }
+
+    // ---- The 11 distinct cube nets (grids of face names) ----
+    // Types: 1-4-1 (6), 2-3-1 (3), 2-2-2 (1), 3-3 (1).
+    var NETS = [
+      { type: '1-4-1', grid: [['', 'T', '', ''], ['L', 'F', 'R', 'B'], ['', 'Bo', '', '']] },
+      { type: '1-4-1', grid: [['T', '', '', ''], ['L', 'F', 'R', 'B'], ['Bo', '', '', '']] },
+      { type: '1-4-1', grid: [['T', '', '', ''], ['L', 'F', 'R', 'B'], ['', 'Bo', '', '']] },
+      { type: '1-4-1', grid: [['T', '', '', ''], ['L', 'F', 'R', 'B'], ['', '', 'Bo', '']] },
+      { type: '1-4-1', grid: [['T', '', '', ''], ['L', 'F', 'R', 'B'], ['', '', '', 'Bo']] },
+      { type: '1-4-1', grid: [['', 'T', '', ''], ['L', 'F', 'R', 'B'], ['', '', 'Bo', '']] },
+      { type: '2-3-1', grid: [['', 'L', ''], ['', 'T', ''], ['F', 'R', 'B'], ['Bo', '', '']] },
+      { type: '2-3-1', grid: [['L', '', ''], ['T', '', ''], ['F', 'R', 'B'], ['', 'Bo', '']] },
+      { type: '2-3-1', grid: [['L', '', ''], ['T', '', ''], ['F', 'R', 'B'], ['', '', 'Bo']] },
+      { type: '2-2-2', grid: [['F', 'R', '', ''], ['', 'T', 'B', ''], ['', '', 'L', 'Bo']] },
+      { type: '3-3', grid: [['F', 'R', 'B', ''], ['', 'T', 'L', 'Bo']] }
+    ];
+
+    // Shared edge between two faces: { a, b } = edge index in each face's
+    // vertex list (edge k runs from vertex k to vertex k+1), or null.
+    function sharedEdge(fa, fb) {
+      for (var i = 0; i < 4; i++) {
+        var a0 = fa.verts[i], a1 = fa.verts[(i + 1) % 4];
+        for (var j = 0; j < 4; j++) {
+          var b0 = fb.verts[j], b1 = fb.verts[(j + 1) % 4];
+          if ((samePt(a0, b0) && samePt(a1, b1)) || (samePt(a0, b1) && samePt(a1, b0))) {
+            return { a: i, b: j };
+          }
+        }
+      }
+      return null;
+    }
+
+    // Lay out one net in the plane, centred on (0,0). Returns
+    // { type, cells: [{ face, x, y, w, h, rot, corners }], tree, order }
+    // where corners are the 4 net-plane corners in the face's vertex order,
+    // tree maps each face (except the anchor) to its parent and the shared
+    // edge (as vertex indices in the child's and the parent's lists), and
+    // order is the BFS order (anchor first) for the hinge fold.
+    function netCells(faces, netIndex) {
+      var net = NETS[mod(netIndex, NETS.length)];
+      var byName = {};
+      faces.forEach(function (f) { byName[f.name] = f; });
+      var pos = {}; // face name -> {gx, gy}
+      net.grid.forEach(function (row, gy) {
+        row.forEach(function (name, gx) { if (name) pos[name] = { gx: gx, gy: gy }; });
+      });
+      // Grid side -> first corner index of that side (corners [TL,TR,BR,BL]).
+      var SIDE_FIRST = { top: 0, right: 1, bottom: 2, left: 3 };
+      var DIRS = [
+        { dx: 0, dy: -1, side: 'top', from: 'bottom' },
+        { dx: 1, dy: 0, side: 'right', from: 'left' },
+        { dx: 0, dy: 1, side: 'bottom', from: 'top' },
+        { dx: -1, dy: 0, side: 'left', from: 'right' }
+      ];
+      function rotFor(face, edgeIndex, side) {
+        return mod(SIDE_FIRST[side] - edgeIndex, 4);
+      }
+      function cellWH(face, rot) {
+        return (rot % 2 === 1) ? { w: face.fh, h: face.fw } : { w: face.fw, h: face.fh };
+      }
+      function cellCorners(x, y, w, h, rot) {
+        var rc = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]; // TL,TR,BR,BL
+        var out = [];
+        for (var i = 0; i < 4; i++) out.push(rc[(i + rot) % 4]);
+        return out;
+      }
+      // BFS from the anchor (front face). The anchor's rot is set from its
+      // first grid neighbour (up, right, down, left order).
+      var placed = {}; // face name -> { face, x, y, w, h, rot, corners }
+      var anchor = byName.F;
+      var anchorPos = pos.F;
+      var anchorRot = 0;
+      for (var di = 0; di < DIRS.length; di++) {
+        var d0 = DIRS[di];
+        var nbName = null;
+        Object.keys(pos).forEach(function (nm) {
+          if (pos[nm].gx === anchorPos.gx + d0.dx && pos[nm].gy === anchorPos.gy + d0.dy) nbName = nm;
+        });
+        if (!nbName) continue;
+        var se0 = sharedEdge(anchor, byName[nbName]);
+        if (se0) { anchorRot = rotFor(anchor, se0.a, d0.side); break; }
+      }
+      var awh = cellWH(anchor, anchorRot);
+      placed.F = {
+        face: 'F', x: -awh.w / 2, y: -awh.h / 2, w: awh.w, h: awh.h, rot: anchorRot,
+        corners: cellCorners(-awh.w / 2, -awh.h / 2, awh.w, awh.h, anchorRot)
+      };
+      // Hinge tree for the fold: each face (except the anchor) records its
+      // parent and the shared edge as vertex indices in both lists.
+      // sharedEdge(a, b) returns {a: edge index in a, b: edge index in b}.
+      var tree = { F: { parent: null, childEdge: null, parentEdge: null } };
+      var order = ['F'];
+      var queue = ['F'];
+      while (queue.length) {
+        var curName = queue.shift();
+        var cur = placed[curName];
+        var curFace = byName[curName];
+        var curPos = pos[curName];
+        for (var k = 0; k < DIRS.length; k++) {
+          var d = DIRS[k];
+          var nx = curPos.gx + d.dx, ny = curPos.gy + d.dy;
+          var nName = null;
+          Object.keys(pos).forEach(function (nm) {
+            if (pos[nm].gx === nx && pos[nm].gy === ny) nName = nm;
+          });
+          if (!nName || placed[nName]) continue;
+          var nFace = byName[nName];
+          var se = sharedEdge(curFace, nFace);
+          if (!se) continue; // not a real shared edge — invalid net (caught by tests)
+          // The neighbour's side facing this face is the opposite side.
+          var nRot = rotFor(nFace, se.b, d.from);
+          var nwh = cellWH(nFace, nRot);
+          var rx, ry;
+          if (d.dy === -1) { rx = cur.x; ry = cur.y - nwh.h; }
+          else if (d.dy === 1) { rx = cur.x; ry = cur.y + cur.h; }
+          else if (d.dx === -1) { rx = cur.x - nwh.w; ry = cur.y; }
+          else { rx = cur.x + cur.w; ry = cur.y; }
+          placed[nName] = {
+            face: nName, x: rx, y: ry, w: nwh.w, h: nwh.h, rot: nRot,
+            corners: cellCorners(rx, ry, nwh.w, nwh.h, nRot)
+          };
+          tree[nName] = {
+            parent: curName,
+            childEdge: [se.b, (se.b + 1) % 4],
+            parentEdge: [se.a, (se.a + 1) % 4]
+          };
+          order.push(nName);
+          queue.push(nName);
+        }
+      }
+      // Centre the whole net on (0,0).
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      Object.keys(placed).forEach(function (nm) {
+        var c = placed[nm];
+        minX = Math.min(minX, c.x); minY = Math.min(minY, c.y);
+        maxX = Math.max(maxX, c.x + c.w); maxY = Math.max(maxY, c.y + c.h);
+      });
+      var ox = -(minX + maxX) / 2, oy = -(minY + maxY) / 2;
+      var cells = Object.keys(placed).map(function (nm) {
+        var c = placed[nm];
+        return {
+          face: c.face, x: c.x + ox, y: c.y + oy, w: c.w, h: c.h, rot: c.rot,
+          corners: c.corners.map(function (p) { return [p[0] + ox, p[1] + oy]; })
+        };
+      });
+      return { type: net.type, cells: cells, tree: tree, order: order };
+    }
+
+    // ---- Hinge fold: the true unfold (no linear interpolation) ----
+    // A linear interpolation between a face's projected quad and its net
+    // cell can collapse a face to a line (two vertices meet) — a bowtie.
+    // Instead each face rotates around the edge it shares with its parent
+    // in the net tree (a kinematic chain, anchor first), by
+    // phi = (1 - openT) * 90°. At openT 0 the faces form the closed box;
+    // at openT 1 they lie flat as the net. Each hinge has a sign (+1/-1)
+    // for the rotation direction, fixed per net (see foldSigns).
+    var foldSignCache = {};
+    function foldSigns(faces, net) {
+      // Cache key must identify the exact net layout (not just its type —
+      // six different nets are all type 1-4-1) and the face dimensions.
+      var key = net.cells.map(function (c) { return c.face + ':' + c.x + ',' + c.y + ',' + c.w + ',' + c.h; }).sort().join('|') +
+        '#' + faces.map(function (f) { return f.name + ':' + f.fw + 'x' + f.fh; }).join(',');
+      if (foldSignCache[key]) return foldSignCache[key];
+      var byName = {};
+      faces.forEach(function (f) { byName[f.name] = f; });
+      var cellByFace = {};
+      net.cells.forEach(function (c) { cellByFace[c.face] = c; });
+      // Net-plane vertices (z=0) for every face, in face-vertex order.
+      // NOTE: net corners are screen coords (y down); 3D uses y up, so flip y.
+      var cur = {};
+      faces.forEach(function (f) {
+        cur[f.name] = cellByFace[f.name].corners.map(function (p) { return [p[0], -p[1], 0]; });
+      });
+      var normals = {};
+      faces.forEach(function (f) { normals[f.name] = [0, 0, 1]; });
+      var signs = {};
+      var PHI = Math.PI / 2; // full fold
+      // Walk the path from the anchor to each face, rotating around each
+      // hinge on the path (anchor first). The hinge edge for a step comes
+      // from the ancestor's current vertices (already folded).
+      function pathTo(name) {
+        var path = [name];
+        var n = name;
+        while (net.tree[n] && net.tree[n].parent) { n = net.tree[n].parent; path.unshift(n); }
+        return path;
+      }
+      for (var oi = 1; oi < net.order.length; oi++) {
+        var name = net.order[oi];
+        var path = pathTo(name);
+        // Apply the ancestors' rotations first (their signs are already fixed).
+        for (var pi = 1; pi < path.length - 1; pi++) {
+          var anc = path[pi];
+          var ancParent = net.tree[anc].parent;
+          var pe = net.tree[anc].parentEdge;
+          var a0 = cur[ancParent][pe[0]], a1 = cur[ancParent][pe[1]];
+          var ang = PHI * signs[anc];
+          cur[name] = cur[name].map(function (v) { return rotPointAroundLine(v, a0, a1, ang); });
+          var ax = norm3([a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]]);
+          normals[name] = rotVec(normals[name], ax, ang);
+        }
+        // Now this face's own hinge: try both signs, keep the one whose
+        // normal lands closest to the face's cube normal.
+        var parent = net.tree[name].parent;
+        var pe2 = net.tree[name].parentEdge;
+        var b0 = cur[parent][pe2[0]], b1 = cur[parent][pe2[1]];
+        var axis = norm3([b1[0] - b0[0], b1[1] - b0[1], b1[2] - b0[2]]);
+        var cubeN = byName[name].normal;
+        var best = null, bestDot = -2;
+        [1, -1].forEach(function (s) {
+          var nn = rotVec(normals[name], axis, PHI * s);
+          var d = nn[0] * cubeN[0] + nn[1] * cubeN[1] + nn[2] * cubeN[2];
+          if (d > bestDot) { bestDot = d; best = s; }
+        });
+        signs[name] = best;
+        cur[name] = cur[name].map(function (v) { return rotPointAroundLine(v, b0, b1, PHI * best); });
+        normals[name] = rotVec(normals[name], axis, PHI * best);
+      }
+      foldSignCache[key] = signs;
+      return signs;
+    }
+
+    // Folded 3D vertices + normals for every face at openT.
+    // Returns { name: { verts: [[x,y,z] x4], normal: [nx,ny,nz] } }.
+    // The folded box is centred on the origin (the anchor stays in the net
+    // plane, so the centroid is subtracted to keep the shape centred).
+    function foldNet(faces, net, openT) {
+      var signs = foldSigns(faces, net);
+      var phi = (1 - smooth(openT)) * Math.PI / 2;
+      var cellByFace = {};
+      net.cells.forEach(function (c) { cellByFace[c.face] = c; });
+      var cur = {};
+      faces.forEach(function (f) {
+        cur[f.name] = cellByFace[f.name].corners.map(function (p) { return [p[0], -p[1], 0]; });
+      });
+      var normals = {};
+      faces.forEach(function (f) { normals[f.name] = [0, 0, 1]; });
+      function pathTo(name) {
+        var path = [name];
+        var n = name;
+        while (net.tree[n] && net.tree[n].parent) { n = net.tree[n].parent; path.unshift(n); }
+        return path;
+      }
+      for (var oi = 1; oi < net.order.length; oi++) {
+        var name = net.order[oi];
+        var path = pathTo(name);
+        for (var pi = 1; pi < path.length; pi++) {
+          var node = path[pi];
+          var parent = net.tree[node].parent;
+          var pe = net.tree[node].parentEdge;
+          var a0 = cur[parent][pe[0]], a1 = cur[parent][pe[1]];
+          var ang = phi * signs[node];
+          cur[name] = cur[name].map(function (v) { return rotPointAroundLine(v, a0, a1, ang); });
+          var ax = norm3([a1[0] - a0[0], a1[1] - a0[1], a1[2] - a0[2]]);
+          normals[name] = rotVec(normals[name], ax, ang);
+        }
+      }
+      // Centre the folded shape on its bounding-box centre, so it matches
+      // the net (bounding-box centred) at openT 1 and the box (centred on
+      // the origin) at openT 0. The centre moves smoothly as it opens.
+      var minX = Infinity, minY = Infinity, minZ = Infinity;
+      var maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      Object.keys(cur).forEach(function (nm) {
+        cur[nm].forEach(function (v) {
+          minX = Math.min(minX, v[0]); minY = Math.min(minY, v[1]); minZ = Math.min(minZ, v[2]);
+          maxX = Math.max(maxX, v[0]); maxY = Math.max(maxY, v[1]); maxZ = Math.max(maxZ, v[2]);
+        });
+      });
+      var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
+      var out = {};
+      Object.keys(cur).forEach(function (nm) {
+        out[nm] = {
+          verts: cur[nm].map(function (v) { return [v[0] - cx, v[1] - cy, v[2] - cz]; }),
+          normal: normals[nm]
+        };
+      });
+      return out;
+    }
+
+    // Face polygons of a box shape at its current openT / azimuth.
+    // Returns [{ name, pts (shape-local), visible, depth }].
+    // The faces swing open on their hinges (see foldNet), so no face
+    // ever collapses into a bowtie while opening.
+    function boxFacePolygons(faces, net, azimuth, openT) {
+      var folded = foldNet(faces, net, openT);
+      var t = smooth(openT);
+      return faces.map(function (f) {
+        var fo = folded[f.name];
+        var pts = fo.verts.map(function (v) {
+          var p = project(v[0], v[1], v[2], azimuth);
+          return [p.x, p.y];
+        });
+        // Depth for painter's order: average rotated (x+z) of the folded
+        // vertices — larger means closer to the viewer (lower on screen).
+        var depth = 0;
+        fo.verts.forEach(function (v) {
+          var c = Math.cos(azimuth), s = Math.sin(azimuth);
+          var xr = v[0] * c + v[2] * s;
+          var zr = -v[0] * s + v[2] * c;
+          depth += (xr + zr);
+        });
+        depth = (depth / 4) * (1 - t * 0.5);
+        return {
+          name: f.name, pts: pts,
+          visible: openT > 0.02 || normalVisible(fo.normal[0], fo.normal[1], fo.normal[2], azimuth),
+          depth: depth
+        };
+      });
+    }
+
+    // ---- Dimensions per shape kind (from the base size in px) ----
+    function dimsFor(kind, size) {
+      if (kind === 'cube') return { hl: size / 2, hh: size / 2, hw: size / 2 };
+      if (kind === 'cuboid' || kind === 'rectPrism') return { hl: size * 0.75, hh: size / 2, hw: size * 0.375 };
+      if (kind === 'squarePrism') return { hl: size * 0.7, hh: size * 0.4, hw: size * 0.4 };
+      if (kind === 'cylinder' || kind === 'cone') return { r: size / 2, h: size * 1.2 };
+      if (kind === 'sphere' || kind === 'hemisphere') return { r: size / 2 };
+      return { hl: size / 2, hh: size / 2, hw: size / 2 };
+    }
+    function isBoxKind(kind) { return kind === 'cube' || kind === 'cuboid' || kind === 'rectPrism' || kind === 'squarePrism'; }
+    function isOpenable(kind) { return kind !== 'sphere' && kind !== 'hemisphere'; }
+
+    // Cylinder net: lateral rectangle + top/bottom circles, centred on (0,0).
+    function cylinderNet(r, h) {
+      var w = TAU * r;
+      return {
+        rect: { x: -w / 2, y: -h / 2, w: w, h: h },
+        top: { x: 0, y: -h / 2 - r, r: r },
+        bottom: { x: 0, y: h / 2 + r, r: r }
+      };
+    }
+    // Cone net: sector (radius = slant, angle = 2*pi*r/slant) + base circle.
+    // Sector apex at (0,0), opening downward; the circle sits tangent to the
+    // arc at its midpoint. The whole net is centred on (0,0).
+    function coneNet(r, h) {
+      var s = Math.sqrt(r * r + h * h);
+      var theta = TAU * r / s;
+      var a0 = Math.PI / 2 - theta / 2, a1 = Math.PI / 2 + theta / 2;
+      // Bounding box of sector + circle, then centre it.
+      var pts = [[0, 0]];
+      for (var i = 0; i <= 16; i++) {
+        var a = a0 + (a1 - a0) * (i / 16);
+        pts.push([Math.cos(a) * s, Math.sin(a) * s]);
+      }
+      var cc = [0, s + r]; // circle centre (tangent to the arc at its midpoint)
+      pts.push([cc[0] - r, cc[1] - r], [cc[0] + r, cc[1] + r]);
+      var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      pts.forEach(function (p) {
+        minX = Math.min(minX, p[0]); minY = Math.min(minY, p[1]);
+        maxX = Math.max(maxX, p[0]); maxY = Math.max(maxY, p[1]);
+      });
+      var ox = -(minX + maxX) / 2, oy = -(minY + maxY) / 2;
+      return {
+        apex: { x: ox, y: oy }, slant: s, a0: a0, a1: a1,
+        circle: { x: cc[0] + ox, y: cc[1] + oy, r: r }
+      };
+    }
+
+    return {
+      project: project, normalVisible: normalVisible, pointInPoly: pointInPoly,
+      boxFaces: boxFaces, NETS: NETS, netCells: netCells, boxFacePolygons: boxFacePolygons,
+      foldNet: foldNet, foldSigns: foldSigns,
+      dimsFor: dimsFor, isBoxKind: isBoxKind, isOpenable: isOpenable,
+      cylinderNet: cylinderNet, coneNet: coneNet,
+      facesAdjacent: facesAdjacent, sharedEdge: sharedEdge, lerp: lerp, smooth: smooth
+    };
+  })();
+  // ---------------------------------------------------------
+  // v4.10 3D SHAPES — render, hit test, toolbar, net picker
+  // ---------------------------------------------------------
+  const S3D_RX = 1.2247449; // isometric ellipse semi-axis (x) per unit radius
+  const S3D_RY = 0.7071068; // isometric ellipse semi-axis (y) per unit radius
+  const S3D_FILL_COLORS = ['#dc2626', '#ea580c', '#f59e0b', '#16a34a', '#2563eb', '#7c3aed', '#db2777', '#0f172a'];
+  const S3D_KIND_LABELS = {
+    cube: 'Cube', cuboid: 'Cuboid', cylinder: 'Cylinder', cone: 'Cone',
+    sphere: 'Sphere', hemisphere: 'Hemisphere', rectPrism: 'Rectangular prism', squarePrism: 'Square prism'
+  };
+  let s3dFillColor = null; // armed fill colour (null = fill mode off)
+  let s3dControlsEl = null; // floating toolbar div under the selected 3D shape
+  let s3dControlsForId = null; // shape id the toolbar was last built for
+  let s3dControlsForFill = null; // fill colour the toolbar was last built for
+  let s3dNetPickerEl = null; // net picker panel div
+
+  function ellipsePoly(cx, cy, rx, ry, n) {
+    const pts = [];
+    const count = n || 20;
+    for (let i = 0; i < count; i++) {
+      const a = (Math.PI * 2 * i) / count;
+      pts.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]);
+    }
+    return pts;
+  }
+
+  function s3dBoxPolys(obj) {
+    const dims = S3D.dimsFor(obj.kind, obj.size);
+    const faces = S3D.boxFaces(dims.hl, dims.hh, dims.hw);
+    const net = S3D.netCells(faces, obj.netIndex || 0);
+    return S3D.boxFacePolygons(faces, net, obj.azimuth || 0, obj.openT || 0);
+  }
+
+  // Cylinder geometry at the current openT (shape-local coords, y down on screen).
+  function s3dCylGeom(obj) {
+    const dims = S3D.dimsFor('cylinder', obj.size);
+    const r = dims.r, h = dims.h;
+    const t = S3D.smooth(obj.openT || 0);
+    const RX = r * S3D_RX, RY = r * S3D_RY;
+    return {
+      r: r, h: h, t: t,
+      w: S3D.lerp(RX * 2, Math.PI * 2 * r, t),
+      topY: S3D.lerp(-h / 2, -h / 2 - r, t),
+      botY: S3D.lerp(h / 2, h / 2 + r, t),
+      eRx: S3D.lerp(RX, r, t),
+      eRy: S3D.lerp(RY, r, t)
+    };
+  }
+
+  // Cone geometry at the current openT (shape-local coords, y down on screen).
+  function s3dConeGeom(obj) {
+    const dims = S3D.dimsFor('cone', obj.size);
+    const r = dims.r, h = dims.h;
+    const s = Math.sqrt(r * r + h * h);
+    const t = S3D.smooth(obj.openT || 0);
+    const net = S3D.coneNet(r, h);
+    return {
+      r: r, h: h, s: s, t: t, net: net,
+      theta: (Math.PI * 2 * r) / s,
+      apexX: S3D.lerp(0, net.apex.x, t),
+      apexY: S3D.lerp(-h / 2, net.apex.y, t),
+      baseCx: S3D.lerp(0, net.circle.x, t),
+      baseCy: S3D.lerp(h / 2, net.circle.y, t),
+      baseRx: S3D.lerp(r * S3D_RX, r, t),
+      baseRy: S3D.lerp(r * S3D_RY, r, t)
+    };
+  }
+
+  // Hit polygons for a 3D shape (shape-local coords): [{name, pts}].
+  // Used for hit testing and for the selection bounds. Faces/parts are
+  // listed front-most first so the first hit wins.
+  function shape3dHitPolys(obj) {
+    const t = obj.openT || 0;
+    if (S3D.isBoxKind(obj.kind)) {
+      const polys = s3dBoxPolys(obj).filter((p) => p.visible);
+      polys.sort((a, b) => b.depth - a.depth); // closest first
+      return polys.map((p) => ({ name: p.name, pts: p.pts }));
+    }
+    if (obj.kind === 'cylinder') {
+      const g = s3dCylGeom(obj);
+      return [
+        { name: 'top', pts: ellipsePoly(0, g.topY, g.eRx, g.eRy, 20) },
+        { name: 'side', pts: [[-g.w / 2, g.topY], [g.w / 2, g.topY], [g.w / 2, g.botY], [-g.w / 2, g.botY]] },
+        { name: 'bottom', pts: ellipsePoly(0, g.botY, g.eRx, g.eRy, 20) }
+      ];
+    }
+    if (obj.kind === 'cone') {
+      const g = s3dConeGeom(obj);
+      const RX = g.r * S3D_RX;
+      // Side: triangle at t=0, sector fan at t=1 (approximated as a polygon).
+      let sidePts;
+      if (t < 0.02) {
+        sidePts = [[g.apexX, g.apexY], [-RX, g.h / 2], [RX, g.h / 2]];
+      } else {
+        const span = g.theta * t;
+        const aMid = Math.PI / 2;
+        sidePts = [[g.apexX, g.apexY]];
+        for (let i = 0; i <= 12; i++) {
+          const a = aMid - span / 2 + (span * i) / 12;
+          sidePts.push([g.apexX + Math.cos(a) * g.s, g.apexY + Math.sin(a) * g.s]);
+        }
+      }
+      return [
+        { name: 'side', pts: sidePts },
+        { name: 'base', pts: ellipsePoly(g.baseCx, g.baseCy, g.baseRx, g.baseRy, 20) }
+      ];
+    }
+    if (obj.kind === 'sphere') {
+      const r = S3D.dimsFor('sphere', obj.size).r;
+      return [{ name: 'all', pts: ellipsePoly(0, 0, r, r, 24) }];
+    }
+    if (obj.kind === 'hemisphere') {
+      const r = S3D.dimsFor('hemisphere', obj.size).r;
+      const dome = [];
+      for (let i = 0; i <= 12; i++) {
+        const a = Math.PI + (Math.PI * i) / 12; // upper semicircle
+        dome.push([Math.cos(a) * r, Math.sin(a) * r]);
+      }
+      return [
+        { name: 'dome', pts: dome },
+        { name: 'base', pts: ellipsePoly(0, 0, r, r * 0.35, 20) }
+      ];
+    }
+    return [];
+  }
+
+  function shape3dBounds(obj) {
+    const polys = shape3dHitPolys(obj);
+    if (!polys.length) return { x: obj.x - 75, y: obj.y - 75, w: 150, h: 150, rotation: 0 };
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of polys) {
+      for (const pt of p.pts) {
+        minX = Math.min(minX, pt[0]); minY = Math.min(minY, pt[1]);
+        maxX = Math.max(maxX, pt[0]); maxY = Math.max(maxY, pt[1]);
+      }
+    }
+    const m = 14; // margin so the selection box clears the shape
+    return { x: obj.x + minX - m, y: obj.y + minY - m, w: (maxX - minX) + m * 2, h: (maxY - minY) + m * 2, rotation: 0 };
+  }
+
+  // Face/part name at a shape-local point, or null.
+  function hitShape3dFace(obj, lx, ly) {
+    const polys = shape3dHitPolys(obj);
+    for (const p of polys) {
+      if (S3D.pointInPoly(lx, ly, p.pts)) return p.name;
+    }
+    return null;
+  }
+  // {obj, name} for the top-most 3D shape under a world point, or null.
+  function hitShape3dFaceAt(wx, wy) {
+    for (let i = (board.shapes3d || []).length - 1; i >= 0; i--) {
+      const s3 = board.shapes3d[i];
+      const name = hitShape3dFace(s3, wx - s3.x, wy - s3.y);
+      if (name) return { obj: s3, name: name };
+    }
+    return null;
+  }
+
+  // ---- Drawing ----
+  function drawShape3d(obj) {
+    if (!obj || !obj.kind) return;
+    ctx.save();
+    ctx.translate(obj.x, obj.y);
+    ctx.lineWidth = 2 / viewport.zoom;
+    ctx.lineJoin = 'round';
+    if (S3D.isBoxKind(obj.kind)) drawShape3dBox(obj);
+    else if (obj.kind === 'cylinder') drawShape3dCylinder(obj);
+    else if (obj.kind === 'cone') drawShape3dCone(obj);
+    else if (obj.kind === 'sphere') drawShape3dSphere(obj);
+    else if (obj.kind === 'hemisphere') drawShape3dHemisphere(obj);
+    ctx.restore();
+  }
+
+  function drawShape3dBox(obj) {
+    const dims = S3D.dimsFor(obj.kind, obj.size);
+    const faces = S3D.boxFaces(dims.hl, dims.hh, dims.hw);
+    const net = S3D.netCells(faces, obj.netIndex || 0);
+    const polys = S3D.boxFacePolygons(faces, net, obj.azimuth || 0, obj.openT || 0);
+    const t = obj.openT || 0;
+    const colors = obj.faceColors || {};
+    const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
+    // Faces, farthest first.
+    const sorted = polys.slice().sort((a, b) => a.depth - b.depth);
+    for (const p of sorted) {
+      if (!p.visible) continue;
+      ctx.beginPath();
+      p.pts.forEach((pt, i) => { if (i === 0) ctx.moveTo(pt[0], pt[1]); else ctx.lineTo(pt[0], pt[1]); });
+      ctx.closePath();
+      const fill = colors[p.name];
+      if (fill) { ctx.fillStyle = fill; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+    }
+    // Hidden edges (closed state only): dashed where both adjacent faces hide.
+    if (t < 0.02) {
+      const az = obj.azimuth || 0;
+      const edgeMap = new Map();
+      faces.forEach((f) => {
+        const vis = S3D.normalVisible(f.normal[0], f.normal[1], f.normal[2], az);
+        for (let i = 0; i < 4; i++) {
+          const v0 = f.verts[i], v1 = f.verts[(i + 1) % 4];
+          const key = [v0, v1].map((p) => p.map((n) => n.toFixed(2)).join(',')).sort().join('|');
+          const p0 = S3D.project(v0[0], v0[1], v0[2], az);
+          const p1 = S3D.project(v1[0], v1[1], v1[2], az);
+          if (!edgeMap.has(key)) edgeMap.set(key, { p0: p0, p1: p1, anyVisible: vis });
+          else edgeMap.get(key).anyVisible = edgeMap.get(key).anyVisible || vis;
+        }
+      });
+      ctx.save();
+      ctx.setLineDash([6 / viewport.zoom, 5 / viewport.zoom]);
+      ctx.strokeStyle = currentTheme === 'dark' ? '#94a3b8' : '#64748b';
+      edgeMap.forEach((e) => {
+        if (e.anyVisible) return;
+        ctx.beginPath();
+        ctx.moveTo(e.p0.x, e.p0.y);
+        ctx.lineTo(e.p1.x, e.p1.y);
+        ctx.stroke();
+      });
+      ctx.restore();
+      // Vertex labels (A, B, C…) — only while the shape is selected, so the
+      // board stays clean. Labels stay on the same physical corner as it spins.
+      if (selectedObject && selectedObject.category === 'shape3d' && selectedObject.id === obj.id) {
+        const seen = new Map();
+        faces.forEach((f) => {
+          f.verts.forEach((v) => {
+            const key = v.map((n) => n.toFixed(2)).join(',');
+            if (!seen.has(key)) seen.set(key, v);
+          });
+        });
+        const verts = Array.from(seen.values());
+        verts.sort((a, b) => (b[1] - a[1]) || (b[2] - a[2]) || (b[0] - a[0]));
+        const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        ctx.save();
+        ctx.font = '600 ' + (13 / viewport.zoom) + 'px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = currentTheme === 'dark' ? '#fbbf24' : '#b45309';
+        verts.forEach((v, i) => {
+          const p = S3D.project(v[0], v[1], v[2], az);
+          const len = Math.hypot(p.x, p.y) || 1;
+          const off = 14 / viewport.zoom;
+          ctx.fillText(letters[i] || ('V' + (i + 1)), p.x + (p.x / len) * off, p.y + (p.y / len) * off);
+        });
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawShape3dCylinder(obj) {
+    const g = s3dCylGeom(obj);
+    const colors = obj.faceColors || {};
+    const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
+    // Lateral surface (fill only; its top/bottom edges are stroked by the ellipses).
+    // The top ellipse is cut out of the fill (evenodd) so the side colour
+    // never shows through the top face.
+    if (colors.side) {
+      ctx.beginPath();
+      ctx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
+      ctx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2, true);
+      ctx.fillStyle = colors.side;
+      ctx.globalAlpha = 0.85;
+      ctx.fill('evenodd');
+      ctx.globalAlpha = 1;
+    }
+    // Sides
+    ctx.strokeStyle = stroke;
+    ctx.beginPath();
+    ctx.moveTo(-g.w / 2, g.topY); ctx.lineTo(-g.w / 2, g.botY);
+    ctx.moveTo(g.w / 2, g.topY); ctx.lineTo(g.w / 2, g.botY);
+    ctx.stroke();
+    // Top ellipse -> circle (moves up to its net spot)
+    ctx.beginPath();
+    ctx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2);
+    if (colors.top) { ctx.fillStyle = colors.top; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+    // Bottom: front arc grows into a full circle as it detaches.
+    ctx.beginPath();
+    ctx.ellipse(0, g.botY, g.eRx, g.eRy, 0, 0, Math.PI * (1 + g.t));
+    if (g.t > 0.9 && colors.bottom) { ctx.fillStyle = colors.bottom; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+
+  function drawShape3dCone(obj) {
+    const g = s3dConeGeom(obj);
+    const colors = obj.faceColors || {};
+    const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
+    const t = g.t;
+    const RX = g.r * S3D_RX, RY = g.r * S3D_RY;
+    // 3D cone (fades out as the net opens)
+    if (t < 1) {
+      ctx.save();
+      ctx.globalAlpha = 1 - t;
+      ctx.beginPath();
+      ctx.moveTo(0, -g.h / 2);
+      ctx.lineTo(-RX, g.h / 2);
+      ctx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI, 0, true); // base front arc, left -> right
+      ctx.closePath();
+      if (colors.side) { ctx.fillStyle = colors.side; ctx.globalAlpha = (1 - t) * 0.85; ctx.fill(); ctx.globalAlpha = 1 - t; }
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+      ctx.restore();
+    }
+    // Net sector (grows + fades in)
+    if (t > 0) {
+      const span = g.theta * t;
+      const aMid = Math.PI / 2;
+      ctx.save();
+      ctx.globalAlpha = t;
+      ctx.beginPath();
+      ctx.moveTo(g.apexX, g.apexY);
+      ctx.arc(g.apexX, g.apexY, g.s, aMid - span / 2, aMid + span / 2);
+      ctx.closePath();
+      if (colors.side) { ctx.fillStyle = colors.side; ctx.globalAlpha = t * 0.85; ctx.fill(); ctx.globalAlpha = t; }
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+      ctx.restore();
+    }
+    // Base circle (morphs from the base ellipse to its net spot)
+    ctx.beginPath();
+    ctx.ellipse(g.baseCx, g.baseCy, g.baseRx, g.baseRy, 0, 0, Math.PI * 2);
+    if (colors.base) { ctx.fillStyle = colors.base; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+
+  function drawShape3dSphere(obj) {
+    const r = S3D.dimsFor('sphere', obj.size).r;
+    const colors = obj.faceColors || {};
+    const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    if (colors.all) { ctx.fillStyle = colors.all; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+    // Equator + meridian (thin, schematic)
+    ctx.save();
+    ctx.strokeStyle = stroke;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 1 / viewport.zoom;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r, r * 0.35, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r * 0.35, r, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawShape3dHemisphere(obj) {
+    const r = S3D.dimsFor('hemisphere', obj.size).r;
+    const colors = obj.faceColors || {};
+    const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
+    // Base (flat face): lower half-ellipse
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r, r * 0.35, 0, 0, Math.PI);
+    ctx.closePath();
+    if (colors.base) { ctx.fillStyle = colors.base; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.beginPath();
+    ctx.ellipse(0, 0, r, r * 0.35, 0, 0, Math.PI);
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+    // Dome: upper semicircle
+    ctx.beginPath();
+    ctx.arc(0, 0, r, Math.PI, Math.PI * 2);
+    ctx.closePath();
+    if (colors.dome) { ctx.fillStyle = colors.dome; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+  }
+
+  // ---- Creation / duplication ----
+  function insertShape3d(kind) {
+    if (!isTeacher()) return;
+    pushHistory();
+    // Place at the centre of the current view (screen centre -> world).
+    const rect = canvas.getBoundingClientRect();
+    const centre = screenToWorld(rect.width / 2, rect.height / 2);
+    const obj = {
+      id: uid('s3d'), kind: kind,
+      x: Math.round(centre.x), y: Math.round(centre.y),
+      size: 150, azimuth: 0.6, openT: 0, netIndex: 0,
+      faceColors: {}, rotation: 0
+    };
+    board.shapes3d = board.shapes3d || [];
+    board.shapes3d.push(obj);
+    selectedObject = { category: 'shape3d', id: obj.id };
+    syncSelectedObjectToControls('shape3d', obj);
+    window.BoardSync.send('shape3d_add', obj);
+    scheduleCloudSave();
+    updateReadouts();
+    requestRender();
+    showToast(S3D_KIND_LABELS[kind] + ' added — drag the slider below it to open');
+  }
+
+  function cloneShape3d(obj) {
+    if (!obj || !isTeacher()) return;
+    pushHistory();
+    const copy = JSON.parse(JSON.stringify(obj));
+    copy.id = uid('s3d');
+    copy.x = obj.x + 60;
+    copy.y = obj.y + 60;
+    board.shapes3d.push(copy);
+    selectedObject = { category: 'shape3d', id: copy.id };
+    syncSelectedObjectToControls('shape3d', copy);
+    window.BoardSync.send('shape3d_add', copy);
+    scheduleCloudSave();
+    updateReadouts();
+    requestRender();
+  }
+
+  // ---- Floating toolbar under the selected 3D shape ----
+  function ensureShape3dControls() {
+    if (s3dControlsEl) return s3dControlsEl;
+    const el = document.createElement('div');
+    el.id = 's3dControls';
+    el.style.position = 'fixed';
+    el.style.zIndex = '9998';
+    el.style.display = 'none';
+    el.style.alignItems = 'center';
+    el.style.gap = '8px';
+    el.style.flexWrap = 'wrap';
+    el.style.maxWidth = '92vw';
+    el.style.background = currentTheme === 'dark' ? '#1e293b' : '#ffffff';
+    el.style.border = '2px solid #2563eb';
+    el.style.borderRadius = '10px';
+    el.style.padding = '6px 10px';
+    el.style.boxShadow = '0 4px 16px rgba(0,0,0,0.25)';
+    el.style.fontFamily = 'Inter, sans-serif';
+    el.style.fontSize = '12px';
+    document.body.appendChild(el);
+    s3dControlsEl = el;
+    return el;
+  }
+
+  function refreshShape3dControls() {
+    const el = ensureShape3dControls();
+    const sel = selectedObject && selectedObject.category === 'shape3d'
+      ? findObject('shape3d', selectedObject.id) : null;
+    if (!sel || !isTeacher()) { el.style.display = 'none'; return; }
+    const openable = S3D.isOpenable(sel.kind);
+    const isBox = S3D.isBoxKind(sel.kind);
+    let html = '';
+    if (openable) {
+      const pct = Math.round((sel.openT || 0) * 100);
+      html += '<label style="display:flex;align-items:center;gap:6px;white-space:nowrap;">Open ' +
+        '<input type="range" id="s3dOpenSlider" min="0" max="100" step="1" value="' + pct + '" style="width:120px;accent-color:#2563eb;">' +
+        '<span id="s3dOpenReadout">' + pct + '%</span></label>';
+    } else {
+      html += '<span style="white-space:nowrap;">' + S3D_KIND_LABELS[sel.kind] + ' cannot be unfolded into a flat net.</span>';
+    }
+    html += '<span style="display:flex;align-items:center;gap:4px;">' +
+      S3D_FILL_COLORS.map((c) => {
+        const armed = s3dFillColor === c;
+        return '<button type="button" data-s3d-fill="' + c + '" title="Fill a face with this colour" style="width:22px;height:22px;border-radius:50%;border:' +
+          (armed ? '3px solid #2563eb' : '2px solid #94a3b8') + ';background:' + c + ';cursor:pointer;padding:0;"></button>';
+      }).join('') + '</span>';
+    if (isBox) html += '<button type="button" id="s3dNetBtn" style="cursor:pointer;">Net</button>';
+    html += '<button type="button" id="s3dCloneBtn" style="cursor:pointer;">Clone</button>';
+    html += '<button type="button" id="s3dDeleteBtn" style="cursor:pointer;">Delete</button>';
+    el.innerHTML = html;
+    el.style.display = 'flex';
+    const slider = el.querySelector('#s3dOpenSlider');
+    if (slider) {
+      slider.addEventListener('input', () => {
+        const v = Number(slider.value) / 100;
+        sel.openT = v;
+        const ro = el.querySelector('#s3dOpenReadout');
+        if (ro) ro.textContent = slider.value + '%';
+        requestRender();
+      });
+      slider.addEventListener('change', () => {
+        window.BoardSync.send('shape3d_update', sel);
+        scheduleCloudSave();
+      });
+    }
+    el.querySelectorAll('[data-s3d-fill]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const c = btn.getAttribute('data-s3d-fill');
+        s3dFillColor = (s3dFillColor === c) ? null : c; // tap again to disarm
+        refreshShape3dControls();
+        if (s3dFillColor) showToast('Tap a face to fill it ' + s3dFillColor);
+      });
+    });
+    const netBtn = el.querySelector('#s3dNetBtn');
+    if (netBtn) netBtn.addEventListener('click', () => openShape3dNetPicker(sel));
+    const cloneBtn = el.querySelector('#s3dCloneBtn');
+    if (cloneBtn) cloneBtn.addEventListener('click', () => cloneShape3d(sel));
+    const delBtn = el.querySelector('#s3dDeleteBtn');
+    if (delBtn) delBtn.addEventListener('click', () => { deleteSelectedObject(); });
+  }
+
+  function positionShape3dControls() {
+    const sel = selectedObject && selectedObject.category === 'shape3d'
+      ? findObject('shape3d', selectedObject.id) : null;
+    if (!sel || !isTeacher()) {
+      if (s3dControlsEl) s3dControlsEl.style.display = 'none';
+      s3dControlsForId = null;
+      return;
+    }
+    const el = ensureShape3dControls();
+    // Rebuild only when the shape or the armed fill colour changed — never
+    // on every render, or the slider would lose focus mid-drag.
+    if (s3dControlsForId !== sel.id || s3dControlsForFill !== s3dFillColor) {
+      refreshShape3dControls();
+      s3dControlsForId = sel.id;
+      s3dControlsForFill = s3dFillColor;
+    }
+    // Keep the slider in sync if the value changed elsewhere (and the user
+    // is not dragging it right now).
+    const slider = el.querySelector('#s3dOpenSlider');
+    if (slider && document.activeElement !== slider) {
+      const pct = Math.round((sel.openT || 0) * 100);
+      if (Number(slider.value) !== pct) {
+        slider.value = String(pct);
+        const ro = el.querySelector('#s3dOpenReadout');
+        if (ro) ro.textContent = pct + '%';
+      }
+    }
+    const b = shape3dBounds(sel);
+    const rect = canvas.getBoundingClientRect();
+    const sx = (b.x + b.w / 2) * viewport.zoom + viewport.panX;
+    const sy = (b.y + b.h) * viewport.zoom + viewport.panY + 10;
+    el.style.left = Math.max(8, Math.min(window.innerWidth - 320, rect.left + sx - 160)) + 'px';
+    el.style.top = Math.min(window.innerHeight - 60, rect.top + sy) + 'px';
+    el.style.display = 'flex';
+  }
+
+  // ---- Net picker (cube / cuboid / prisms: all 11 nets) ----
+  function openShape3dNetPicker(obj) {
+    closeShape3dNetPicker();
+    const el = document.createElement('div');
+    el.id = 's3dNetPicker';
+    el.style.position = 'fixed';
+    el.style.zIndex = '9999';
+    el.style.background = currentTheme === 'dark' ? '#1e293b' : '#ffffff';
+    el.style.border = '2px solid #2563eb';
+    el.style.borderRadius = '10px';
+    el.style.padding = '10px';
+    el.style.boxShadow = '0 4px 16px rgba(0,0,0,0.3)';
+    el.style.fontFamily = 'Inter, sans-serif';
+    el.style.fontSize = '12px';
+    el.style.maxWidth = '92vw';
+    el.style.maxHeight = '70vh';
+    el.style.overflow = 'auto';
+    const dims = S3D.dimsFor(obj.kind, obj.size);
+    const faces = S3D.boxFaces(dims.hl, dims.hh, dims.hw);
+    let html = '<div style="font-weight:700;margin-bottom:6px;">Choose a net — ' + S3D_KIND_LABELS[obj.kind] + '</div>';
+    html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">';
+    S3D.NETS.forEach((net, idx) => {
+      const cells = S3D.netCells(faces, idx).cells;
+      // Mini SVG thumbnail of the net (face cells as squares/rects).
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      cells.forEach((c) => {
+        minX = Math.min(minX, c.x); minY = Math.min(minY, c.y);
+        maxX = Math.max(maxX, c.x + c.w); maxY = Math.max(maxY, c.y + c.h);
+      });
+      const W = 84, H = 64;
+      const sc = Math.min(W / (maxX - minX), H / (maxY - minY));
+      const ox = (W - (maxX - minX) * sc) / 2 - minX * sc;
+      const oy = (H - (maxY - minY) * sc) / 2 - minY * sc;
+      let svg = '<svg width="' + W + '" height="' + H + '" style="background:' +
+        (currentTheme === 'dark' ? '#0f172a' : '#f1f5f9') + ';border-radius:6px;">';
+      cells.forEach((c) => {
+        svg += '<rect x="' + (c.x * sc + ox).toFixed(1) + '" y="' + (c.y * sc + oy).toFixed(1) +
+          '" width="' + (c.w * sc).toFixed(1) + '" height="' + (c.h * sc).toFixed(1) +
+          '" fill="' + ((obj.faceColors || {})[c.face] || (currentTheme === 'dark' ? '#334155' : '#e2e8f0')) +
+          '" stroke="' + (currentTheme === 'dark' ? '#e2e8f0' : '#0f172a') + '" stroke-width="1"/>';
+      });
+      svg += '</svg>';
+      const active = (obj.netIndex || 0) === idx;
+      html += '<button type="button" data-s3d-net="' + idx + '" style="cursor:pointer;padding:6px;border-radius:8px;border:' +
+        (active ? '2px solid #2563eb' : '1px solid #94a3b8') + ';background:' +
+        (currentTheme === 'dark' ? '#1e293b' : '#ffffff') + ';color:inherit;">' + svg +
+        '<div style="margin-top:4px;font-weight:600;">' + net.type + '</div></button>';
+    });
+    html += '</div><div style="margin-top:8px;text-align:right;"><button type="button" id="s3dNetClose" style="cursor:pointer;">Close</button></div>';
+    el.innerHTML = html;
+    document.body.appendChild(el);
+    const rect = canvas.getBoundingClientRect();
+    el.style.left = Math.max(8, rect.left + rect.width / 2 - 160) + 'px';
+    el.style.top = Math.max(8, rect.top + 80) + 'px';
+    s3dNetPickerEl = el;
+    el.querySelectorAll('[data-s3d-net]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        pushHistory();
+        obj.netIndex = Number(btn.getAttribute('data-s3d-net'));
+        window.BoardSync.send('shape3d_update', obj);
+        scheduleCloudSave();
+        closeShape3dNetPicker();
+        requestRender();
+      });
+    });
+    el.querySelector('#s3dNetClose').addEventListener('click', () => closeShape3dNetPicker());
+  }
+  function closeShape3dNetPicker() {
+    if (s3dNetPickerEl && s3dNetPickerEl.parentNode) s3dNetPickerEl.parentNode.removeChild(s3dNetPickerEl);
+    s3dNetPickerEl = null;
+  }
+
+  // @s3d-geometry-end
 
   // ---------------------------------------------------------
   // OBJECT ACTIONS (DELETE, ADD FRAME, ADD SHAPE, CLEAR)
@@ -4020,6 +5195,7 @@
       for (const it of deletable) {
         if (it.category === 'frame') board.frames = board.frames.filter((f) => f.id !== it.obj.id);
         else if (it.category === 'shape') board.shapes = board.shapes.filter((s) => s.id !== it.obj.id);
+        else if (it.category === 'shape3d') board.shapes3d = (board.shapes3d || []).filter((s) => s.id !== it.obj.id); // v4.10
         else if (it.category === 'text') board.texts = (board.texts || []).filter((t) => t.id !== it.obj.id);
         else if (it.category === 'image') board.images = board.images.filter((im) => im.id !== it.obj.id);
         else if (it.category === 'line') board.lines = board.lines.filter((l) => l.id !== it.obj.id);
@@ -4044,6 +5220,8 @@
       board.frames = board.frames.filter((f) => f.id !== id);
     } else if (category === 'shape') {
       board.shapes = board.shapes.filter((s) => s.id !== id);
+    } else if (category === 'shape3d') {
+      board.shapes3d = (board.shapes3d || []).filter((s) => s.id !== id); // v4.10
     } else if (category === 'text') {
       board.texts = (board.texts || []).filter((t) => t.id !== id);
     } else if (category === 'image') {
@@ -4224,6 +5402,7 @@
     pushHistory();
     board.strokes = [];
     board.shapes = [];
+    board.shapes3d = []; // v4.10
     board.lines = [];
     board.texts = [];
     if (selectedObject && selectedObject.category !== 'instrument' && selectedObject.category !== 'frame') {
@@ -4324,6 +5503,14 @@
       });
     });
 
+    // v4.10: 3D shape buttons — tap one to place that shape at the centre
+    // of the current view (they insert immediately; there is no drag-to-draw).
+    document.querySelectorAll('[data-shape3d-kind]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        insertShape3d(btn.getAttribute('data-shape3d-kind'));
+      });
+    });
+
     // Pan mode toggle button
     const btnPanMode = document.getElementById('btnPanMode');
     if (btnPanMode) {
@@ -4412,15 +5599,17 @@
       });
     }
 
-    // Pen widths
-    document.querySelectorAll('[data-pen-width]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        uiState.penWidth = parseFloat(btn.getAttribute('data-pen-width')) || 4;
-        document.querySelectorAll('[data-pen-width]').forEach((b) => {
-          b.classList.toggle('active', parseFloat(b.getAttribute('data-pen-width')) === uiState.penWidth);
-        });
+    // v4.10: Pen Thickness slider (1–20 px) — replaces the 3 fixed widths.
+    // New strokes only; the pen dot cursor follows the thickness (updateCursorStyle).
+    const thicknessSlider = document.getElementById('penThicknessSlider');
+    const thicknessReadout = document.getElementById('penThicknessReadout');
+    if (thicknessSlider) {
+      thicknessSlider.addEventListener('input', () => {
+        uiState.penWidth = parseFloat(thicknessSlider.value) || 4;
+        if (thicknessReadout) thicknessReadout.textContent = uiState.penWidth + ' px';
+        updateCursorStyle();
       });
-    });
+    }
 
     // Snap to Ruler edge checkbox
     const chkSnapRuler = document.getElementById('chkSnapRuler');
@@ -5752,6 +6941,7 @@
       if (Array.isArray(snap.frames)) board.frames = snap.frames;
       ensureFrameSeqs(); // v4.8: snapshots may carry frames without numbers
       if (Array.isArray(snap.shapes)) board.shapes = snap.shapes;
+      if (Array.isArray(snap.shapes3d)) board.shapes3d = snap.shapes3d; // v4.10
       if (Array.isArray(snap.texts)) board.texts = snap.texts;
       if (Array.isArray(snap.lines)) board.lines = snap.lines;
       if (Array.isArray(snap.images)) {
@@ -5809,6 +6999,25 @@
       const idx = board.shapes.findIndex((x) => x.id === sh.id);
       if (idx >= 0) board.shapes[idx] = sh;
       else board.shapes.push(sh);
+      requestRender();
+    });
+
+    // v4.10: 3D shapes — same find-or-push pattern as 2D shapes.
+    sync.on('shape3d_add', (sh) => {
+      if (!sh || !sh.id) return;
+      board.shapes3d = board.shapes3d || [];
+      const idx = board.shapes3d.findIndex((x) => x.id === sh.id);
+      if (idx >= 0) board.shapes3d[idx] = sh;
+      else board.shapes3d.push(sh);
+      requestRender();
+    });
+
+    sync.on('shape3d_update', (sh) => {
+      if (!sh || !sh.id) return;
+      board.shapes3d = board.shapes3d || [];
+      const idx = board.shapes3d.findIndex((x) => x.id === sh.id);
+      if (idx >= 0) board.shapes3d[idx] = sh;
+      else board.shapes3d.push(sh);
       requestRender();
     });
 
@@ -5955,6 +7164,7 @@
       if (!info || !info.id) return;
       if (info.category === 'stroke') board.strokes = board.strokes.filter((s) => s.id !== info.id);
       else if (info.category === 'shape') board.shapes = board.shapes.filter((s) => s.id !== info.id);
+      else if (info.category === 'shape3d') board.shapes3d = (board.shapes3d || []).filter((s) => s.id !== info.id); // v4.10
       else if (info.category === 'image') board.images = board.images.filter((im) => im.id !== info.id);
       else if (info.category === 'line') board.lines = board.lines.filter((l) => l.id !== info.id);
       else if (info.category === 'text') board.texts = (board.texts || []).filter((t) => t.id !== info.id);
@@ -5970,6 +7180,7 @@
     sync.on('clear_drawings', () => {
       board.strokes = [];
       board.shapes = [];
+      board.shapes3d = []; // v4.10
       board.lines = [];
       board.texts = [];
       if (selectedObject && selectedObject.category !== 'instrument' && selectedObject.category !== 'frame') {
