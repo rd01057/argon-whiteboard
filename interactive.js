@@ -3789,34 +3789,35 @@
       if (wasRightClick && isTeacher()) openFrameMenu(e.clientX, e.clientY); // v4.8: students get no frame menu
     });
 
-    // v4.8: wheel = zoom only (see handleBoardWheel below); trackpad
-    // two-finger drag still pans. The old single-event delta-size guess
-    // misread smooth-scroll mice as trackpads and fast trackpad flicks
-    // as mouse wheels.
-    // v4.8: the wheel does ONE job — zoom — everywhere on the board area,
-    // and the trackpad two-finger drag still pans. The old code guessed
-    // mouse-vs-trackpad from a single event's delta size (|deltaY| >= 40 =
-    // mouse), so a smooth-scroll mouse that sends small steps panned the
-    // board instead of zooming, and a fast trackpad flick zoomed instead of
-    // panning. Now the gesture is classified once and held for its whole
-    // burst, using deltaMode + step size + integer steps.
+    // v4.9: wheel = zoom only (see handleBoardWheel below); trackpad
+    // two-finger drag still pans. v4.8 guessed mouse-vs-trackpad from a
+    // single event at the start of each burst, so a smooth-scroll mouse
+    // that sends the SAME tiny fractional delta on every detent (Rahul's
+    // mouse: exactly ±4.000244140625 per tick) was read as a trackpad drag
+    // and panned the board instead of zooming; fast flicks sometimes
+    // zoomed because a few events were big enough. The board now reads
+    // the SHAPE of the burst instead of one event: repeated identical
+    // deltas = mouse-wheel detents -> zoom; a stream of varying small
+    // deltas = trackpad drag -> pan; a lone tick with no follow-up = a
+    // mouse notch -> zoom. The clear rules from v4.8 (Ctrl+wheel pinch,
+    // line mode, |deltaY| >= 40, integer steps >= 10) still decide at
+    // once, and a clear horizontal component (|deltaX| > 3) is a
+    // trackpad drag -> pan. The page scroll is blocked immediately on
+    // every wheel event, before any decision is made.
     let wheelGesture = { kind: null, time: 0 };
-    function classifyWheelEvent(e) {
-      const now = performance.now();
-      if (wheelGesture.kind && now - wheelGesture.time < 200) return wheelGesture.kind;
+    let wheelPending = []; // ambiguous ticks waiting for the next tick to decide them
+    let wheelPendingTimer = null; // lone tick -> mouse notch -> zoom after 50 ms
+    let wheelRepeat = 0; // consecutive ticks with (nearly) the same deltaY
+    function wheelClearKind(e) { // 'zoom' | 'pan' | null (null = ambiguous, needs a second tick)
       const ay = Math.abs(e.deltaY);
-      let kind;
-      if (e.ctrlKey) kind = 'zoom'; // trackpad pinch arrives as Ctrl+wheel
-      else if (e.deltaMode === 1) kind = 'zoom'; // line-mode steps = a real mouse wheel
-      else if (ay >= 40) kind = 'zoom';
-      else if (ay > 0 && Number.isInteger(e.deltaY) && ay >= 10) kind = 'zoom'; // smooth mouse wheel, small integer steps
-      else kind = 'pan'; // small fractional deltas = trackpad two-finger drag
-      wheelGesture = { kind: kind, time: now };
-      return kind;
+      if (e.ctrlKey) return 'zoom'; // trackpad pinch arrives as Ctrl+wheel
+      if (e.deltaMode === 1) return 'zoom'; // line-mode steps = a real mouse wheel
+      if (ay >= 40) return 'zoom';
+      if (ay > 0 && Number.isInteger(e.deltaY) && ay >= 10) return 'zoom'; // smooth mouse wheel, small integer steps
+      if (Math.abs(e.deltaX) > 3) return 'pan'; // real horizontal motion = trackpad drag
+      return null;
     }
-    function handleBoardWheel(e) {
-      const kind = classifyWheelEvent(e);
-      e.preventDefault();
+    function wheelApply(kind, e) {
       // Zoom toward the cursor; clamp the anchor inside the canvas so a
       // wheel over the header/toolbar still zooms sensibly.
       const rect = canvas.getBoundingClientRect();
@@ -3830,6 +3831,36 @@
         viewport.panY -= e.deltaY;
         requestRender();
       }
+    }
+    function wheelFlushPending(kind) {
+      const pending = wheelPending; wheelPending = [];
+      wheelRepeat = 0;
+      if (wheelPendingTimer) { clearTimeout(wheelPendingTimer); wheelPendingTimer = null; }
+      wheelGesture = { kind: kind, time: performance.now() };
+      for (const ev of pending) wheelApply(kind, ev);
+    }
+    function handleBoardWheel(e) {
+      e.preventDefault(); // v4.9: block the page scroll first, on every tick
+      const now = performance.now();
+      if (wheelGesture.kind && now - wheelGesture.time < 200) { wheelApply(wheelGesture.kind, e); return; }
+      const clear = wheelClearKind(e);
+      if (clear) { wheelFlushPending(clear); wheelApply(clear, e); return; }
+      // Ambiguous: a small fractional tick with no horizontal component.
+      const last = wheelPending[wheelPending.length - 1];
+      if (last && Math.abs(e.deltaY - last.deltaY) <= 0.25) {
+        wheelRepeat++;
+        if (wheelRepeat >= 3) { wheelFlushPending('zoom'); wheelApply('zoom', e); return; }
+        wheelPending.push(e);
+      } else if (last && wheelPending.length >= 2 && Math.abs(e.deltaY) < 15 &&
+                 wheelPending.every((ev) => Math.abs(ev.deltaY) < 15)) {
+        // Three varying small ticks in a row = a trackpad drag -> pan.
+        wheelFlushPending('pan'); wheelApply('pan', e); return;
+      } else {
+        wheelRepeat = 1;
+        wheelPending.push(e);
+      }
+      if (wheelPendingTimer) clearTimeout(wheelPendingTimer);
+      wheelPendingTimer = setTimeout(() => wheelFlushPending('zoom'), 50);
     }
     document.addEventListener('wheel', (e) => {
       // The chat list and the big-picture view keep their own scrolling/zoom.

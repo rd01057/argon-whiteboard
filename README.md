@@ -1,4 +1,18 @@
-# Geometry Whiteboard — Argon v4.4
+# Geometry Whiteboard — Argon v4.9
+
+## v4.9 — what is new (1 fix, built on v4.8)
+1. **Mouse wheel finally zooms (burst-aware detection)** — v4.8 read one wheel
+   event at the start of each burst, so a smooth-scroll mouse sending the SAME
+   tiny fractional delta on every detent (Rahul's mouse: exactly ±4.000244140625
+   per tick) was read as a trackpad drag and panned the board instead of
+   zooming. The board now reads the SHAPE of the burst: repeated identical
+   deltas = mouse-wheel detents → zoom; a stream of varying small deltas =
+   trackpad drag → pan; a lone tick with no follow-up = a mouse notch → zoom.
+   The clear rules are unchanged (Ctrl+wheel pinch, line mode, |deltaY| >= 40,
+   integer steps >= 10 → zoom; |deltaX| > 3 → pan), and the page scroll is
+   blocked immediately on every wheel event. Trackpad two-finger drag still
+   pans. Verified in the VM with Rahul's exact 20 diagnostic numbers — all 20
+   zoom — plus synthetic trackpad streams that all pan (`wheel-test.js`).
 
 ## v4.4 — what is new (3 edits, built on v4.3)
 1. **Unlock hold is now 1 second** (was 3 seconds). The shaded left-to-right progress bar fills in 1 s; releasing early, or moving the cursor off the unlock icon, still cancels.
