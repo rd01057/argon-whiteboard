@@ -639,6 +639,10 @@
     }).then(() => {
       setCloudStatus('Cloud: saved ' + cloudTimeNow());
       showToast('Cloud saved');
+      // v4.16: tell the room a fresh cloud copy exists — students pull it
+      // (a live phone never reads the cloud on its own, so "Save now"
+      // used to change nothing on their screens).
+      window.BoardSync.send('cloud_updated', { tab: activeClassTabId, at: Date.now() });
     }).catch((err) => {
       const msg = (err && err.message) ? String(err.message) : '';
       if (msg.indexOf('HTTP ') === 0) {
@@ -703,6 +707,34 @@
       restoreFromLocalBackup(); // v4.8: cloud unreachable — fall back to the device backup
     })
     .finally(() => { cloudLoadInFlight = false; cloudLoadDone = true; cloudLoadResolvedFor = room + '|' + tab; flushCloudSavePending(); });
+  }
+  // v4.16: pull the teacher's saved board from the cloud on demand.
+  // Unlike loadCloudBoard (fresh load only, never overwrites content),
+  // this is for a student mid-class: the teacher's cloud copy is the
+  // authority and the student has no local edits to lose (view-only).
+  // Narrow race: a stroke sent in the ~1 s before the teacher's save
+  // lands may be clobbered by the pull — it returns with the next
+  // stroke or snapshot.
+  function pullCloudBoard() {
+    const { url, key, room } = cloudCreds();
+    if (!url || !key || !room) return;
+    const tab = activeClassTabId;
+    fetch(url + '/rest/v1/board_saves?room=eq.' + encodeURIComponent(room) + '&tab=eq.' + encodeURIComponent(tab) + '&select=state&limit=1', {
+      headers: { 'apikey': key, 'Authorization': 'Bearer ' + key }
+    }).then((r) => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then((rows) => {
+      if (rows && rows.length && rows[0].state) {
+        applyBoardState(rows[0].state);
+        const t = classTabs.find((x) => x.id === tab);
+        if (t) t.state = serializeBoard();
+        setCloudStatus('Cloud: synced from teacher ' + cloudTimeNow());
+        showToast('Synced latest board from cloud');
+      }
+    }).catch(() => {
+      showToast('Cloud sync failed — try reloading the page');
+    });
   }
   // ---------------------------------------------------------
   // v4.8: ON-DEVICE BACKUP (IndexedDB) — the board remembers even
@@ -7328,10 +7360,21 @@
   // v4.7: a board snapshot carries photos as metadata only (no src) — a
   // full board with photos would exceed the 256 KB broadcast cap and be
   // dropped whole. Each photo's data then follows via sendImageFull.
+  // v4.16: the STROKES are the part that outgrew the cap — a 15–20 min
+  // class writes ~250+ strokes and the whole-board snapshot passes
+  // 256 KB, so a rejoining phone's catch-up was silently dropped. The
+  // snapshot itself now travels chunked (same 32 KB machinery as the
+  // photos); small boards still go direct, exactly as before.
+  const SNAPSHOT_DIRECT_LIMIT = 98304; // same as IMAGE_DIRECT_LIMIT
   function sendBoardSnapshot() {
     const snap = serializeBoard();
     snap.images = board.images.map((im) => imageMetaFor(im));
-    window.BoardSync.send('board_snapshot', snap);
+    const json = JSON.stringify(snap);
+    if (json.length > SNAPSHOT_DIRECT_LIMIT) {
+      sendChunked('snapshot_meta', 'snapshot_chunk', 'board_snapshot', { kind: 'board_snapshot' }, json);
+    } else {
+      window.BoardSync.send('board_snapshot', snap);
+    }
     for (const im of board.images) {
       if (im.src) sendImageFull(im);
     }
@@ -8192,7 +8235,12 @@
     sync.on('toast', (msg) => showToast(msg));
 
     sync.on('provide_snapshot', () => {
-      sendBoardSnapshot(); // v4.7: photos travel chunked, not in the snapshot
+      // v4.16: only the creator or the teacher answers snapshot requests
+      // — with chunked snapshots, six peers answering at once would burst
+      // ~80 messages and risk the 100 msg/sec project limit. The
+      // creator's / teacher's copy is the authoritative one. A room with
+      // neither still loads from the cloud on a fresh page load.
+      if (window.BoardSync.isCreator || isTeacher()) sendBoardSnapshot(); // v4.7: photos travel chunked, not in the snapshot
     });
 
     sync.on('apply_snapshot', (snap) => {
@@ -8227,6 +8275,14 @@
       updateReadouts();
       requestRender();
       showToast('Synced board snapshot from room');
+    });
+
+    // v4.16: the teacher just saved to the cloud — students pull it.
+    // Teachers ignore it (they ARE the source). Students are view-only,
+    // so the cloud copy cannot clobber any local edit of theirs.
+    sync.on('cloud_updated', () => {
+      if (isTeacher()) return;
+      pullCloudBoard();
     });
 
     sync.on('instrument_update', (payload) => {
@@ -8393,6 +8449,19 @@
         } else if (idx >= 0) {
           showToast('Image arrived incomplete — please add it again');
         }
+      });
+
+    // v4.16: chunked board snapshot — reassemble a big board sent in
+    // pieces and apply it through the normal apply_snapshot path.
+    // (Boards that still go direct arrive as board_snapshot; this
+    // receiver is in addition to that handler, not a replacement.)
+    registerChunkReceiver('snapshot_meta', 'snapshot_chunk',
+      null,
+      (id, src) => {
+        if (!src) { showToast('Board sync arrived incomplete — ask the teacher to tap Save now'); return; }
+        let snap = null;
+        try { snap = JSON.parse(src); } catch (e) { snap = null; }
+        if (snap) window.BoardSync.emitLocal('apply_snapshot', snap);
       });
 
     // v4.8: class chat — text goes direct (tiny); pictures go chunked.

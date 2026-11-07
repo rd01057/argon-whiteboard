@@ -48,6 +48,17 @@
       // (myRole). The packet carries it so every peer can ignore board edits
       // sent by a student device; 'student' is the default (view-only).
       this.myRole = 'student';
+      // v4.16: connection watchdog. Broadcast has no delivery receipt and
+      // the board never noticed a silently dead channel (the green dot
+      // stayed on while nothing arrived). lastRxAt records the last
+      // received message (or subscribe); the watchdog re-joins when the
+      // channel is not joined or nothing has arrived for a while.
+      this.lastRxAt = 0;
+      this.peerLastSeen = new Map(); // peerId -> timestamp (prunes the device count)
+      this.watchdogTimer = null;
+      this.rejoinTimer = null;
+      this.rejoinDelayMs = 3000;
+      this.lastPresenceAt = 0;
     }
 
     on(event, handler) {
@@ -267,8 +278,10 @@
           this.channel.subscribe((status) => {
             if (status === 'SUBSCRIBED') {
               this.connected = true;
+              this.lastRxAt = Date.now();
               this.updateStatusUI('Live Sync (' + this.roomCode + ')', 'connected');
               this.announcePresence();
+              this.startWatchdog();
               if (!this.isCreator) {
                 this.send('request_snapshot', { requesterId: this.clientId });
               }
@@ -277,6 +290,16 @@
               this.connected = false;
               this.updateStatusUI('Supabase error — Tab Sync active', 'local');
               this.emitLocal('toast', 'Supabase connection issue; local tab sync is active.');
+              this.scheduleRejoin();
+            } else if (status === 'CLOSED') {
+              // v4.16: the server closed the channel (it is removed from
+              // the socket and never rejoins on its own). The old code
+              // ignored this status and kept showing a green "Live Sync"
+              // on a dead channel.
+              this.connected = false;
+              this.updateStatusUI('Connection lost — reconnecting…', 'connecting');
+              this.emitLocal('toast', 'Connection lost — reconnecting…');
+              this.scheduleRejoin();
             }
           });
         } catch (err) {
@@ -305,11 +328,68 @@
     }
 
     announcePresence() {
+      this.lastPresenceAt = Date.now();
       this.send('peer_hello', { peerId: this.clientId });
+    }
+
+    startWatchdog() {
+      // v4.16: one 10 s timer for the life of the page. It watches for a
+      // silently dead channel, re-announces presence so the device count
+      // means live devices, and prunes peers not heard from in 90 s.
+      if (this.watchdogTimer) return;
+      this.watchdogTimer = setInterval(() => this.watchdogTick(), 10000);
+    }
+
+    watchdogTick() {
+      const now = Date.now();
+      // Prune stale peers (the old count only ever grew).
+      let pruned = false;
+      for (const [id, at] of this.peerLastSeen) {
+        if (now - at > 90000) { this.peerLastSeen.delete(id); this.peers.delete(id); pruned = true; }
+      }
+      if (pruned) {
+        this.updateStatusUI(
+          this.supabase ? 'Live Sync (' + this.roomCode + ')' : 'Tab Sync (' + this.roomCode + ')',
+          this.supabase ? 'connected' : 'local'
+        );
+      }
+      if (!this.supabase || !this.channel || !this.roomCode) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      // Presence heartbeat so peers can prune us too.
+      if (this.connected && now - (this.lastPresenceAt || 0) > 30000) this.announcePresence();
+      const channelDead = this.channel.state && this.channel.state !== 'joined';
+      // Silence only counts as death when OTHER devices are in the room:
+      // the peers set is seeded with this device's own id, so size 1
+      // means solo — and a solo board normally hears nothing, so it must
+      // not keep "reconnecting" itself. The 30 s presence heartbeat
+      // above means a live room refreshes lastRxAt well inside the 45 s
+      // window.
+      const silentTooLong = this.peers.size > 1 && this.lastRxAt && (now - this.lastRxAt > 45000);
+      if (channelDead || silentTooLong) {
+        this.connected = false;
+        this.updateStatusUI('Connection lost — reconnecting…', 'connecting');
+        this.scheduleRejoin();
+      }
+    }
+
+    scheduleRejoin() {
+      // v4.16: force a fresh subscribe (new client + channel). Guarded so
+      // a flapping network cannot stack rejoin attempts.
+      if (this.rejoinTimer) return;
+      this.rejoinTimer = setTimeout(() => {
+        this.rejoinTimer = null;
+        if (!this.roomCode) return;
+        this.connectToRoom(this.roomCode, this.isCreator);
+      }, this.rejoinDelayMs);
     }
 
     handleIncomingMessage(msg) {
       if (!msg || msg.senderId === this.clientId) return;
+
+      // v4.16: any received message proves the channel is alive (even one
+      // the role filter below drops — it still arrived).
+      this.lastRxAt = Date.now();
+      if (msg.senderId) this.peerLastSeen.set(msg.senderId, Date.now());
 
       // v4.8: teacher-only board. Board-changing events sent by a student-role
       // device are dropped here, on EVERY peer — so a student edit can never

@@ -1,4 +1,10 @@
-# Geometry Whiteboard — Argon v4.14
+# Geometry Whiteboard — Argon v4.16
+
+## v4.16 — what is new (live-sync freeze fix, built on v4.14 — v4.15's cone/cylinder fix is NOT in this build)
+1. **The board now notices a dead connection and reconnects** — a watchdog checks every 10 s: if the channel is not joined, or nothing has arrived for 45 s while other devices are in the room, the pill turns to "Connection lost — reconnecting…" and the board re-joins the room. A channel closed by the server ('CLOSED', previously ignored — the green dot stayed on) now triggers the same recovery. A solo board never "reconnects" itself (silence is normal with nobody else in the room).
+2. **The catch-up snapshot is sent in small pieces** — the whole-board snapshot (which grows past Supabase's 256 KB broadcast cap after ~250 strokes, about 15–20 min of class) now travels chunked in ~32 KB pieces using the same machinery as photos. Small boards still go direct. Only the room creator or the teacher answers snapshot requests, so six devices don't burst ~80 messages at once.
+3. **"Save now" now reaches the students' phones** — saving to the cloud also sends a tiny "cloud updated" message, and student devices pull the saved board from the cloud at once. Teachers ignore it (they are the source).
+4. **The device count means live devices** — peers not heard from in 90 s are dropped from the count (it used to only ever grow), and every device announces itself every 30 s so the count stays honest.
 
 ## v4.14 — what is new (2 fixes from device testing, built on v4.13)
 1. **Coloured 3D faces keep their colour from the inside** — box shapes (cube, cuboid, both prisms) used to skip back-facing faces entirely, so a coloured face went blank as soon as it rotated to the far side. Back faces are now filled with the same colour (not stroked — their edges stay dashed, as before). Same fix in the PDF export.
