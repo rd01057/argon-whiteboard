@@ -1,4 +1,9 @@
-# Geometry Whiteboard — Argon v4.12
+# Geometry Whiteboard — Argon v4.13
+
+## v4.13 — what is new (3 fixes from device testing, built on v4.12)
+1. **Shapes land inside the working frame** — 3D shapes, 2D shapes and lines now drop at the centre of the frame being worked on (same rule as the v4.11 instruments), instead of the centre of the screen. With no frame under the view centre they still land at the view centre.
+2. **Hover-aware mouse wheel** — hovering the left toolbar scrolls the toolbar; hovering the tool-options strip scrolls it sideways; hovering the board zooms as before.
+3. **Text box font size edits the written text** — a floating A− / size / A+ bar under a selected text box resizes that box live (synced, undoable); the panel Size box does the same when a text is selected, and still sets the size for the next box when nothing is selected. Double-click a text box (any tool) to edit its words again.
 
 ## v4.12 — what is new (code review fixes, 60fps smoothness, UI polish & 6 live-teaching additions, built on v4.11)
 1. **Sync & Broadcast reliability fixes (`sync.js` + `interactive.js`)**:

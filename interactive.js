@@ -1550,6 +1550,8 @@
     }
     // Keep the floating 3D toolbar under the selected shape after each render.
     positionShape3dControls();
+    // v4.13: keep the floating text-size bar under the selected text box.
+    positionTextSizeControls();
 
     // 6. Draw Lines & Arrows
     for (const ln of board.lines) {
@@ -4209,8 +4211,34 @@
       // the board swallowed its wheel events, so its 11 nets could only be
       // scrolled by dragging the scrollbar.)
       if (e.target && e.target.closest && (e.target.closest('#chatList') || e.target.closest('#imageLightbox') || e.target.closest('#s3dNetPicker'))) return;
+      // v4.13: hovering the left toolbar scrolls the toolbar itself (it has
+      // its own vertical scroll) instead of zooming the board.
+      if (e.target && e.target.closest && e.target.closest('#leftToolbar')) return;
+      // v4.13: hovering the tool-options strip scrolls it sideways instead
+      // of zooming the board.
+      if (e.target && e.target.closest) {
+        const sub = e.target.closest('#contextSubBar');
+        if (sub) {
+          sub.scrollLeft += e.deltaY;
+          e.preventDefault();
+          return;
+        }
+      }
       handleBoardWheel(e);
     }, { passive: false });
+
+    // v4.13: double-click a text box (any tool) to edit its words again.
+    canvas.addEventListener('dblclick', (e) => {
+      if (!isTeacher()) return;
+      const rect = canvas.getBoundingClientRect();
+      const w = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+      const hit = hitTestBoardObjects(w.x, w.y);
+      if (hit && hit.category === 'text') {
+        interaction = null;
+        openTextEditor(hit.obj.x, hit.obj.y, hit.obj);
+        interaction = { type: 'text_edit' };
+      }
+    });
 
     // Touch Events: 1 finger pans (in Select) or draws (in Pen/Shapes/Lines); 2 fingers pinch-zoom!
     canvas.addEventListener('touchstart', (e) => {
@@ -4911,6 +4939,9 @@
   let s3dControlsEl = null; // floating toolbar div under the selected 3D shape
   let s3dControlsForId = null; // shape id the toolbar was last built for
   let s3dControlsForFill = null; // fill colour the toolbar was last built for
+  let textSizeControlsEl = null; // v4.13: floating size bar under the selected text box
+  let textSizeControlsForId = null; // text id the size bar was last built for
+  let textSizeHistoryPushed = false; // v4.13: one undo step per size gesture
   let s3dNetPickerEl = null; // net picker panel div
 
   function ellipsePoly(cx, cy, rx, ry, n) {
@@ -5271,12 +5302,29 @@
   }
 
   // ---- Creation / duplication ----
+  // v4.13: insertion point for new shapes/lines — the centre of the
+  // working frame (the frame containing the centre of the current view),
+  // else the centre of the current view. Same rule as the v4.11
+  // instruments (workingFrameTarget, defined inside the UI bindings
+  // below, so this top-level copy is used by the insert functions).
+  function workingFrameCentre() {
+    const rect = canvas.getBoundingClientRect();
+    const c = screenToWorld(rect.width / 2, rect.height / 2);
+    for (let i = board.frames.length - 1; i >= 0; i--) {
+      const fr = board.frames[i];
+      const local = fr.rotation ? unrotatePoint(c.x, c.y, fr.x + fr.w / 2, fr.y + fr.h / 2, fr.rotation) : c;
+      if (local.x >= fr.x && local.x <= fr.x + fr.w && local.y >= fr.y && local.y <= fr.y + fr.h) {
+        return { x: fr.x + fr.w / 2, y: fr.y + fr.h / 2 };
+      }
+    }
+    return { x: c.x, y: c.y };
+  }
+
   function insertShape3d(kind) {
     if (!isTeacher()) return;
     pushHistory();
-    // Place at the centre of the current view (screen centre -> world).
-    const rect = canvas.getBoundingClientRect();
-    const centre = screenToWorld(rect.width / 2, rect.height / 2);
+    // v4.13: land inside the working frame (its centre), else view centre.
+    const centre = workingFrameCentre();
     const obj = {
       id: uid('s3d'), kind: kind,
       x: Math.round(centre.x), y: Math.round(centre.y),
@@ -5445,6 +5493,118 @@
     const sy = (b.y + b.h) * viewport.zoom + viewport.panY + 10;
     el.style.left = Math.max(8, Math.min(window.innerWidth - 320, rect.left + sx - 160)) + 'px';
     el.style.top = Math.min(window.innerHeight - 60, rect.top + sy) + 'px';
+    el.style.display = 'flex';
+  }
+
+  // ---- v4.13: floating font-size bar under the selected text box ----
+  function ensureTextSizeControls() {
+    if (textSizeControlsEl) return textSizeControlsEl;
+    const el = document.createElement('div');
+    el.id = 'textSizeControls';
+    el.style.position = 'fixed';
+    el.style.zIndex = '9998';
+    el.style.display = 'none';
+    el.style.alignItems = 'center';
+    el.style.gap = '6px';
+    el.style.background = 'rgba(15, 23, 42, 0.92)';
+    el.style.color = '#f8fafc';
+    el.style.borderRadius = '999px';
+    el.style.padding = '5px 8px';
+    el.style.boxShadow = '0 4px 16px rgba(0,0,0,0.35)';
+    el.style.fontSize = '13px';
+    el.innerHTML = '<span style="opacity:.8">A</span>' +
+      '<button type="button" id="textSizeMinus" title="Smaller text" style="width:24px;height:24px;border-radius:999px;border:1px solid #475569;background:#1e293b;color:#f8fafc;cursor:pointer;font-size:14px;line-height:1">−</button>' +
+      '<input id="textSelSizeInput" type="number" min="12" max="72" value="22" title="Text size in px" style="width:52px;text-align:center;border-radius:6px;border:1px solid #475569;background:#0f172a;color:#f8fafc;padding:2px 4px;font-size:13px">' +
+      '<button type="button" id="textSizePlus" title="Bigger text" style="width:24px;height:24px;border-radius:999px;border:1px solid #475569;background:#1e293b;color:#f8fafc;cursor:pointer;font-size:14px;line-height:1">+</button>';
+    document.body.appendChild(el);
+    textSizeControlsEl = el;
+    el.querySelector('#textSizeMinus').addEventListener('click', () => stepTextFontSize(-2));
+    el.querySelector('#textSizePlus').addEventListener('click', () => stepTextFontSize(2));
+    const inp = el.querySelector('#textSelSizeInput');
+    inp.addEventListener('input', () => {
+      const v = parseInt(inp.value, 10);
+      if (v) applyTextFontSize(v, false);
+    });
+    inp.addEventListener('change', () => {
+      const v = parseInt(inp.value, 10) || 22;
+      applyTextFontSize(v, true);
+    });
+    return el;
+  }
+
+  function remeasureTextObj(obj) {
+    if (!obj || !obj.text) {
+      obj.h = Math.max(32, Math.round((obj.fontSize || 22) * 1.35 + 14));
+      return;
+    }
+    const lines = String(obj.text).split('\n');
+    ctx.save();
+    ctx.font = '600 ' + (obj.fontSize || 22) + 'px Inter, sans-serif';
+    let maxW = 0;
+    for (const ln of lines) maxW = Math.max(maxW, ctx.measureText(ln).width);
+    ctx.restore();
+    obj.w = Math.max(120, Math.round(maxW + 24));
+    obj.h = Math.max(32, Math.round(lines.length * (obj.fontSize || 22) * 1.35 + 14));
+  }
+
+  // Live-apply a font size to the selected / edited text box.
+  // commit=false: local preview (first tick banks one undo step).
+  // commit=true: sync + cloud save.
+  function applyTextFontSize(size, commit) {
+    const obj = (textEditor && textEditor.obj) || (selectedObject && selectedObject.category === 'text' ? findObject('text', selectedObject.id) : null);
+    if (!obj) return;
+    const v = Math.max(12, Math.min(72, Math.round(size) || 22));
+    if (!commit && !textSizeHistoryPushed) {
+      pushHistory();
+      textSizeHistoryPushed = true;
+    }
+    obj.fontSize = v;
+    remeasureTextObj(obj);
+    if (textEditor && textEditor.obj === obj) {
+      textEditor.textarea.style.fontSize = Math.max(12, v * viewport.zoom) + 'px';
+    }
+    if (commit) {
+      window.BoardSync.send('text_update', obj);
+      scheduleCloudSave();
+      textSizeHistoryPushed = false;
+    }
+    requestRender();
+  }
+
+  function stepTextFontSize(delta) {
+    const obj = (textEditor && textEditor.obj) || (selectedObject && selectedObject.category === 'text' ? findObject('text', selectedObject.id) : null);
+    if (!obj) return;
+    pushHistory();
+    applyTextFontSize((obj.fontSize || 22) + delta, true);
+    textSizeHistoryPushed = false;
+  }
+
+  function positionTextSizeControls() {
+    const sel = selectedObject && selectedObject.category === 'text'
+      ? findObject('text', selectedObject.id) : null;
+    if (!sel || !isTeacher() || (textEditor && textEditor.obj === sel)) {
+      // While the editor is open the panel Size box is the control.
+      if (textSizeControlsEl) textSizeControlsEl.style.display = 'none';
+      textSizeControlsForId = null;
+      return;
+    }
+    const el = ensureTextSizeControls();
+    if (textSizeControlsForId !== sel.id) {
+      textSizeControlsForId = sel.id;
+      textSizeHistoryPushed = false;
+    }
+    const inp = el.querySelector('#textSelSizeInput');
+    if (inp && document.activeElement !== inp) {
+      const v = String(sel.fontSize || 22);
+      if (inp.value !== v) inp.value = v;
+    }
+    const panel = document.getElementById('textSizeInput');
+    if (panel && document.activeElement !== panel) panel.value = String(sel.fontSize || 22);
+    const rect = canvas.getBoundingClientRect();
+    const sx = (sel.x + (sel.w || 120) / 2) * viewport.zoom + viewport.panX;
+    const sy = (sel.y + (sel.h || 40)) * viewport.zoom + viewport.panY + 10;
+    el.style.left = Math.max(8, Math.min(window.innerWidth - 190, rect.left + sx - 90)) + 'px';
+    el.style.top = Math.min(window.innerHeight - 50, rect.top + sy) + 'px';
     el.style.display = 'flex';
   }
 
@@ -5701,8 +5861,8 @@
 
   function insertShapeCentered(shapeType) {
     pushHistory();
-    const rect = canvas.getBoundingClientRect();
-    const center = screenToWorld(rect.width / 2, rect.height / 2);
+    // v4.13: land inside the working frame (its centre), else view centre.
+    const center = workingFrameCentre();
     const w = shapeType === 'ellipse' ? 140 : 160;
     const h = shapeType === 'ellipse' ? 140 : 120;
     const newShape = {
@@ -5727,8 +5887,8 @@
 
   function insertLineCentered(lineType) {
     pushHistory();
-    const rect = canvas.getBoundingClientRect();
-    const center = screenToWorld(rect.width / 2, rect.height / 2);
+    // v4.13: land inside the working frame (its centre), else view centre.
+    const center = workingFrameCentre();
     if (lineType === 'measure') {
       const m = {
         id: uid('meas'),
@@ -8169,7 +8329,19 @@
     const textColor = document.getElementById('textColorPicker');
     if (textColor) textColor.addEventListener('input', (e) => { uiState.textColor = e.target.value; });
     const textSize = document.getElementById('textSizeInput');
-    if (textSize) textSize.addEventListener('input', (e) => { uiState.textSize = parseInt(e.target.value, 10) || 22; });
+    if (textSize) {
+      // v4.13: with no text selected this sets the size for the NEXT box
+      // (old behaviour); with a text selected/edited it resizes THAT box.
+      textSize.addEventListener('input', (e) => {
+        uiState.textSize = parseInt(e.target.value, 10) || 22;
+        const v = parseInt(e.target.value, 10);
+        if (v) applyTextFontSize(v, false);
+      });
+      textSize.addEventListener('change', (e) => {
+        const v = parseInt(e.target.value, 10) || 22;
+        applyTextFontSize(v, true);
+      });
+    }
     // v4: after joining/creating a room, try the cloud-saved board (fails silently without the table).
     // v4.1: restore this room's tab list FIRST (stable tab ids), reset the load guard,
     // and only then load — otherwise load queries a random tab id and finds nothing.
