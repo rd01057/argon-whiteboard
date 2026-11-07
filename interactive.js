@@ -781,6 +781,16 @@
     };
   }
 
+  // v4.11: wrap an angle difference to [-PI, PI] so a continuous drag can
+  // spin past 180°. The old rotate code measured from the drag start, so one
+  // drag could only turn a shape 180° before atan2 wrapped and snapped it back.
+  function angleDelta(prev, cur) {
+    let d = cur - prev;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  }
+
   function unrotatePoint(px, py, cx, cy, angleDeg) {
     return rotatePoint(px, py, cx, cy, -angleDeg);
   }
@@ -1230,6 +1240,19 @@
   function hitTestBoardObjects(wx, wy) {
     const tol = 10 / viewport.zoom;
 
+    // v4.11: 3D shapes FIRST — a click on a 3D shape must select the shape,
+    // even where pen strokes or text lie over it. Before, strokes/text/lines
+    // were tested first, so writing over a cylinder stole the click and the
+    // shape's toolbar + handles never appeared. Trade-off: a stroke lying
+    // exactly on a shape is now reached by marquee-select or the eraser.
+    // 3D shapes — face-polygon hit test, top-most first
+    for (let i = (board.shapes3d || []).length - 1; i >= 0; i--) {
+      const s3 = board.shapes3d[i];
+      if (hitShape3dFace(s3, wx - s3.x, wy - s3.y)) {
+        return { category: 'shape3d', id: s3.id, obj: s3 };
+      }
+    }
+
     // 1. Strokes (top-most first)
     for (let i = board.strokes.length - 1; i >= 0; i--) {
       const st = board.strokes[i];
@@ -1294,14 +1317,6 @@
       const local = im.rotation ? unrotatePoint(wx, wy, cx, cy, im.rotation) : { x: wx, y: wy };
       if (local.x >= im.x - tol && local.x <= im.x + im.w + tol && local.y >= im.y - tol && local.y <= im.y + im.h + tol) {
         return { category: 'image', id: im.id, obj: im };
-      }
-    }
-
-    // 3c. 3D shapes (v4.10) — face-polygon hit test, top-most first
-    for (let i = (board.shapes3d || []).length - 1; i >= 0; i--) {
-      const s3 = board.shapes3d[i];
-      if (hitShape3dFace(s3, wx - s3.x, wy - s3.y)) {
-        return { category: 'shape3d', id: s3.id, obj: s3 };
       }
     }
 
@@ -2927,9 +2942,11 @@
           pushHistory();
           face.obj.faceColors = face.obj.faceColors || {};
           face.obj.faceColors[face.name] = s3dFillColor;
+          face.obj.noFill = false; // v4.11: colouring a face ends wireframe mode
           window.BoardSync.send('shape3d_update', face.obj);
           scheduleCloudSave();
           updateReadouts();
+          refreshShape3dControls();
           requestRender();
           return;
         }
@@ -2995,6 +3012,22 @@
           selectedObject = { category: 'frame', id: objHit.id };
           syncSelectedObjectToControls('frame', objHit.obj);
           interaction = { type: 'pan', startSx: sx, startSy: sy, origPanX: viewport.panX, origPanY: viewport.panY };
+          updateReadouts();
+          requestRender();
+          return;
+        }
+        // v4.11: dragging a 3D shape that is ALREADY selected rotates it
+        // (body-drag: sideways = spin, up/down = tilt, full 360°+ in one
+        // drag). Dragging a shape that is not selected yet still moves it,
+        // and the rotate handle always rotates.
+        if (objHit.category === 'shape3d' && selectedObject && selectedObject.category === 'shape3d' && selectedObject.id === objHit.id) {
+          pushHistory();
+          interaction = {
+            type: 'rotate_shape3d',
+            obj: objHit.obj,
+            lastSx: sx,
+            lastSy: sy
+          };
           updateReadouts();
           requestRender();
           return;
@@ -3201,23 +3234,11 @@
     }
 
     // v4.4: marquee drag — just track the box; selection happens on release.
+    // v4.11: only the left button marquees now (right-drag pans — see mousedown).
     if (interaction.type === 'marquee') {
       interaction.curWx = wx;
       interaction.curWy = wy;
-      // v4.10: a right-button marquee stays PENDING (no selection cleared, no
-      // box shown) until the drag passes 6 px — a plain right-click must leave
-      // the selection untouched and still open the frame menu.
-      if (interaction.rightButton) {
-        if (Math.hypot(wx - interaction.startWx, wy - interaction.startWy) > 6) {
-          if (!interaction.moved) {
-            interaction.moved = true;
-            selectedObject = null; multiActive = false; multiSelection = [];
-          }
-          marquee = { x1: interaction.startWx, y1: interaction.startWy, x2: wx, y2: wy };
-        }
-      } else {
-        marquee = { x1: interaction.startWx, y1: interaction.startWy, x2: wx, y2: wy };
-      }
+      marquee = { x1: interaction.startWx, y1: interaction.startWy, x2: wx, y2: wy };
       requestRender();
       return;
     }
@@ -3242,6 +3263,22 @@
         } else { frameSnapGuide = []; }
       }
       for (const it of interaction.items) window.BoardSync.send(it.category + '_update', it.obj, 40);
+      requestRender();
+      return;
+    }
+
+    // v4.11: dragging the body of an already-selected 3D shape rotates it —
+    // sideways drag spins it (azimuth), vertical drag tilts it (elevation).
+    // Screen-pixel deltas accumulate, so one drag can spin it a full 360°+.
+    if (interaction.type === 'rotate_shape3d') {
+      const obj = interaction.obj;
+      const dx = sx - interaction.lastSx;
+      const dy = sy - interaction.lastSy;
+      interaction.lastSx = sx;
+      interaction.lastSy = sy;
+      obj.azimuth = (obj.azimuth || 0) + dx * 0.01;
+      obj.elevation = (obj.elevation || 0) + dy * 0.01;
+      window.BoardSync.send('shape3d_update', obj, 40);
       requestRender();
       return;
     }
@@ -3473,11 +3510,18 @@
 
       if (h === 'rotate') {
         if (interaction.category === 'shape3d') {
-          // v4.10: the rotate handle spins the 3D shape around its vertical
-          // axis (azimuth), so the teacher can show it from another side.
-          const startAng = Math.atan2(interaction.startWy - cy, interaction.startWx - cx);
+          // v4.11: the rotate handle spins the 3D shape around its vertical
+          // axis (azimuth). The angle is accumulated from the PREVIOUS pointer
+          // position, not the drag start — v4.10 measured from the start, so
+          // one drag could only turn it 180° before atan2 wrapped.
           const curAng = Math.atan2(wy - cy, wx - cx);
-          obj.azimuth = (orig.azimuth || 0) + (curAng - startAng);
+          if (interaction.lastAng === undefined) {
+            interaction.lastAng = Math.atan2(interaction.startWy - cy, interaction.startWx - cx);
+            interaction.accAng = 0;
+          }
+          interaction.accAng += angleDelta(interaction.lastAng, curAng);
+          interaction.lastAng = curAng;
+          obj.azimuth = (orig.azimuth || 0) + interaction.accAng;
           window.BoardSync.send('shape3d_update', obj, 40);
           requestRender();
           return;
@@ -3642,9 +3686,6 @@
     // v4.4: marquee released — select everything whose bounds intersect the box.
     if (act.type === 'marquee') {
       marquee = null;
-      // v4.10: a right-button marquee that never moved is a right-click — the
-      // selection stays exactly as it was (the frame menu opens from mouseup).
-      if (act.rightButton && !act.moved) { updateReadouts(); requestRender(); return; }
       const rx1 = Math.min(act.startWx, act.curWx), ry1 = Math.min(act.startWy, act.curWy);
       const rx2 = Math.max(act.startWx, act.curWx), ry2 = Math.max(act.startWy, act.curWy);
       if (Math.abs(act.curWx - act.startWx) < 10 && Math.abs(act.curWy - act.startWy) < 10) {
@@ -3680,6 +3721,8 @@
       window.BoardSync.send('instrument_update', { key: 'ruler', state: board.instruments.ruler });
     } else if (act.type === 'move_multi') {
       for (const it of act.items) window.BoardSync.send(it.category + '_update', it.obj);
+    } else if (act.type === 'rotate_shape3d') {
+      window.BoardSync.send('shape3d_update', act.obj);
     } else if (act.type === 'move_object' || act.type === 'transform_object') {
       if (act.category === 'instrument') {
         const key = act.obj.id === 'inst_protractor' ? 'protractor' : 'ruler';
@@ -3844,17 +3887,11 @@
     canvas.addEventListener('mousedown', (e) => {
       const { sx, sy } = getCanvasCoords(e);
       if (e.button === 2) {
-        // Right-drag pan, in drag direction, regardless of active tool (except while editing text).
+        // v4.11: right-drag pans the board, in drag direction, regardless of
+        // active tool (except while editing text). v4.10 made it marquee in
+        // Select; Rahul wants left-drag = select, right-drag = pan.
         // v4.3: a right press that barely moves is a right-CLICK (frame menu), not a pan.
         if (textEditor) commitTextEditor();
-        // v4.10: in Select (teacher only), a right-button drag marquees instead
-        // of panning — it selects frames + writings whether it starts inside or
-        // outside a frame. Students and other tools keep the right-drag pan.
-        if (isTeacher() && uiState.activeTab === 'select') {
-          const world = screenToWorld(sx, sy);
-          interaction = { type: 'marquee', rightButton: true, moved: false, startWx: world.x, startWy: world.y, curWx: world.x, curWy: world.y };
-          return;
-        }
         interaction = { type: 'pan', rightButton: true, moved: false, startSx: sx, startSy: sy, origPanX: viewport.panX, origPanY: viewport.panY };
         return;
       }
@@ -3875,8 +3912,7 @@
 
     window.addEventListener('mouseup', (e) => {
       // v4.3: right-click = right press that did not drag; open the frame menu at the cursor.
-      // v4.10: a right-click is a right press that did not drag, whatever the
-      // interaction type — in Select it is a marquee that never moved, not a pan.
+      // v4.11: the press is a pan that never moved (right-drag pans since v4.11).
       const wasRightClick = !!(interaction && interaction.rightButton && !interaction.moved);
       if (interaction) endPointerInteraction();
       if (wasRightClick && isTeacher()) openFrameMenu(e.clientX, e.clientY); // v4.8: students get no frame menu
@@ -3956,8 +3992,11 @@
       wheelPendingTimer = setTimeout(() => wheelFlushPending('zoom'), 50);
     }
     document.addEventListener('wheel', (e) => {
-      // The chat list and the big-picture view keep their own scrolling/zoom.
-      if (e.target && e.target.closest && (e.target.closest('#chatList') || e.target.closest('#imageLightbox'))) return;
+      // The chat list, the big-picture view and the 3D net picker keep their
+      // own scrolling/zoom. (v4.11: the net picker joins this list — before,
+      // the board swallowed its wheel events, so its 11 nets could only be
+      // scrolled by dragging the scrollbar.)
+      if (e.target && e.target.closest && (e.target.closest('#chatList') || e.target.closest('#imageLightbox') || e.target.closest('#s3dNetPicker'))) return;
       handleBoardWheel(e);
     }, { passive: false });
 
@@ -4129,20 +4168,30 @@
     function samePt(a, b) { return Math.abs(a[0] - b[0]) < 1e-6 && Math.abs(a[1] - b[1]) < 1e-6 && Math.abs(a[2] - b[2]) < 1e-6; }
 
     // Isometric projection of a shape-local 3D point (y up, origin centre).
-    // az = rotation around the vertical (Y) axis.
-    function project(x, y, z, az) {
+    // az = rotation around the vertical (Y) axis; el = tilt around the
+    // X axis (v4.11). el = 0 gives exactly the old projection.
+    function project(x, y, z, az, el) {
+      var e = el || 0;
+      var ce = Math.cos(e), se = Math.sin(e);
+      var y1 = y * ce - z * se;
+      var z1 = y * se + z * ce;
       var c = Math.cos(az), s = Math.sin(az);
-      var xr = x * c + z * s;
-      var zr = -x * s + z * c;
-      return { x: (xr - zr) * COS30, y: (xr + zr) * SIN30 - y };
+      var xr = x * c + z1 * s;
+      var zr = -x * s + z1 * c;
+      return { x: (xr - zr) * COS30, y: (xr + zr) * SIN30 - y1 };
     }
     // A face is visible when its outward normal points toward the viewer
-    // (view direction (1, 1, 1) in this projection).
-    function normalVisible(nx, ny, nz, az) {
+    // (view direction (1, 1, 1) in this projection). Same combined
+    // rotation as project(): tilt around X first, then spin around Y.
+    function normalVisible(nx, ny, nz, az, el) {
+      var e = el || 0;
+      var ce = Math.cos(e), se = Math.sin(e);
+      var ny1 = ny * ce - nz * se;
+      var nz1 = ny * se + nz * ce;
       var c = Math.cos(az), s = Math.sin(az);
-      var rx = nx * c + nz * s;
-      var rz = -nx * s + nz * c;
-      return (rx + ny + rz) > 0.001;
+      var rx = nx * c + nz1 * s;
+      var rz = -nx * s + nz1 * c;
+      return (rx + ny1 + rz) > 0.001;
     }
     function pointInPoly(px, py, poly) {
       var inside = false;
@@ -4488,32 +4537,37 @@
       return out;
     }
 
-    // Face polygons of a box shape at its current openT / azimuth.
+    // Face polygons of a box shape at its current openT / azimuth / elevation.
     // Returns [{ name, pts (shape-local), visible, depth }].
     // The faces swing open on their hinges (see foldNet), so no face
     // ever collapses into a bowtie while opening.
-    function boxFacePolygons(faces, net, azimuth, openT) {
+    function boxFacePolygons(faces, net, azimuth, openT, elevation) {
       var folded = foldNet(faces, net, openT);
       var t = smooth(openT);
+      var el = elevation || 0;
+      var ce = Math.cos(el), se = Math.sin(el);
+      var ca = Math.cos(azimuth), sa = Math.sin(azimuth);
       return faces.map(function (f) {
         var fo = folded[f.name];
         var pts = fo.verts.map(function (v) {
-          var p = project(v[0], v[1], v[2], azimuth);
+          var p = project(v[0], v[1], v[2], azimuth, el);
           return [p.x, p.y];
         });
         // Depth for painter's order: average rotated (x+z) of the folded
         // vertices — larger means closer to the viewer (lower on screen).
+        // Uses the same combined rotation as project().
         var depth = 0;
         fo.verts.forEach(function (v) {
-          var c = Math.cos(azimuth), s = Math.sin(azimuth);
-          var xr = v[0] * c + v[2] * s;
-          var zr = -v[0] * s + v[2] * c;
+          var y1 = v[1] * ce - v[2] * se;
+          var z1 = v[1] * se + v[2] * ce;
+          var xr = v[0] * ca + z1 * sa;
+          var zr = -v[0] * sa + z1 * ca;
           depth += (xr + zr);
         });
         depth = (depth / 4) * (1 - t * 0.5);
         return {
           name: f.name, pts: pts,
-          visible: openT > 0.02 || normalVisible(fo.normal[0], fo.normal[1], fo.normal[2], azimuth),
+          visible: openT > 0.02 || normalVisible(fo.normal[0], fo.normal[1], fo.normal[2], azimuth, el),
           depth: depth
         };
       });
@@ -4606,7 +4660,7 @@
     const dims = S3D.dimsFor(obj.kind, obj.size);
     const faces = S3D.boxFaces(dims.hl, dims.hh, dims.hw);
     const net = S3D.netCells(faces, obj.netIndex || 0);
-    return S3D.boxFacePolygons(faces, net, obj.azimuth || 0, obj.openT || 0);
+    return S3D.boxFacePolygons(faces, net, obj.azimuth || 0, obj.openT || 0, obj.elevation || 0);
   }
 
   // Cylinder geometry at the current openT (shape-local coords, y down on screen).
@@ -4753,7 +4807,7 @@
     const dims = S3D.dimsFor(obj.kind, obj.size);
     const faces = S3D.boxFaces(dims.hl, dims.hh, dims.hw);
     const net = S3D.netCells(faces, obj.netIndex || 0);
-    const polys = S3D.boxFacePolygons(faces, net, obj.azimuth || 0, obj.openT || 0);
+    const polys = S3D.boxFacePolygons(faces, net, obj.azimuth || 0, obj.openT || 0, obj.elevation || 0);
     const t = obj.openT || 0;
     const colors = obj.faceColors || {};
     const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
@@ -4772,14 +4826,15 @@
     // Hidden edges (closed state only): dashed where both adjacent faces hide.
     if (t < 0.02) {
       const az = obj.azimuth || 0;
+      const el = obj.elevation || 0;
       const edgeMap = new Map();
       faces.forEach((f) => {
-        const vis = S3D.normalVisible(f.normal[0], f.normal[1], f.normal[2], az);
+        const vis = S3D.normalVisible(f.normal[0], f.normal[1], f.normal[2], az, el);
         for (let i = 0; i < 4; i++) {
           const v0 = f.verts[i], v1 = f.verts[(i + 1) % 4];
           const key = [v0, v1].map((p) => p.map((n) => n.toFixed(2)).join(',')).sort().join('|');
-          const p0 = S3D.project(v0[0], v0[1], v0[2], az);
-          const p1 = S3D.project(v1[0], v1[1], v1[2], az);
+          const p0 = S3D.project(v0[0], v0[1], v0[2], az, el);
+          const p1 = S3D.project(v1[0], v1[1], v1[2], az, el);
           if (!edgeMap.has(key)) edgeMap.set(key, { p0: p0, p1: p1, anyVisible: vis });
           else edgeMap.get(key).anyVisible = edgeMap.get(key).anyVisible || vis;
         }
@@ -4814,7 +4869,7 @@
         ctx.textBaseline = 'middle';
         ctx.fillStyle = currentTheme === 'dark' ? '#fbbf24' : '#b45309';
         verts.forEach((v, i) => {
-          const p = S3D.project(v[0], v[1], v[2], az);
+          const p = S3D.project(v[0], v[1], v[2], az, el);
           const len = Math.hypot(p.x, p.y) || 1;
           const off = 14 / viewport.zoom;
           ctx.fillText(letters[i] || ('V' + (i + 1)), p.x + (p.x / len) * off, p.y + (p.y / len) * off);
@@ -4958,7 +5013,7 @@
     const obj = {
       id: uid('s3d'), kind: kind,
       x: Math.round(centre.x), y: Math.round(centre.y),
-      size: 150, azimuth: 0.6, openT: 0, netIndex: 0,
+      size: 150, azimuth: 0.6, elevation: 0, openT: 0, netIndex: 0,
       faceColors: {}, rotation: 0
     };
     board.shapes3d = board.shapes3d || [];
@@ -5034,6 +5089,10 @@
         return '<button type="button" data-s3d-fill="' + c + '" title="Fill a face with this colour" style="width:22px;height:22px;border-radius:50%;border:' +
           (armed ? '3px solid #2563eb' : '2px solid #94a3b8') + ';background:' + c + ';cursor:pointer;padding:0;"></button>';
       }).join('') + '</span>';
+    // v4.11: "no colour" — clears every face colour so the shape shows as a
+    // wireframe (edges only). Tapping any colour afterwards fills faces again.
+    html += '<button type="button" data-s3d-nofill title="No colour — show wireframe only" style="width:22px;height:22px;border-radius:50%;border:' +
+      (sel.noFill ? '3px solid #2563eb' : '2px solid #94a3b8') + ';background:#ffffff;color:#dc2626;cursor:pointer;padding:0;font-weight:700;font-size:13px;line-height:1;">✕</button>';
     if (isBox) html += '<button type="button" id="s3dNetBtn" style="cursor:pointer;">Net</button>';
     html += '<button type="button" id="s3dCloneBtn" style="cursor:pointer;">Clone</button>';
     html += '<button type="button" id="s3dDeleteBtn" style="cursor:pointer;">Delete</button>';
@@ -5061,8 +5120,25 @@
         if (s3dFillColor) showToast('Tap a face to fill it ' + s3dFillColor);
       });
     });
+    const noFillBtn = el.querySelector('[data-s3d-nofill]');
+    if (noFillBtn) noFillBtn.addEventListener('click', () => {
+      pushHistory();
+      sel.noFill = true;
+      sel.faceColors = {};
+      s3dFillColor = null;
+      window.BoardSync.send('shape3d_update', sel);
+      scheduleCloudSave();
+      refreshShape3dControls();
+      requestRender();
+      showToast('Colour removed — wireframe only');
+    });
     const netBtn = el.querySelector('#s3dNetBtn');
-    if (netBtn) netBtn.addEventListener('click', () => openShape3dNetPicker(sel));
+    if (netBtn) netBtn.addEventListener('click', () => {
+      // v4.11: the Net button toggles the picker (the outside-click closer
+      // below ignores this button, so its own toggle decides).
+      if (s3dNetPickerEl) closeShape3dNetPicker();
+      else openShape3dNetPicker(sel);
+    });
     const cloneBtn = el.querySelector('#s3dCloneBtn');
     if (cloneBtn) cloneBtn.addEventListener('click', () => cloneShape3d(sel));
     const delBtn = el.querySelector('#s3dDeleteBtn');
@@ -5105,6 +5181,19 @@
     el.style.display = 'flex';
   }
 
+  // v4.11: clicking anywhere outside the net picker closes it. A click on
+  // the board is swallowed so it doesn't also start a draw/select; clicks
+  // on other UI (toolbar, panels) pass through and work as usual. The Net
+  // button is excluded — its own toggle decides.
+  function onNetPickerOutsideDown(e) {
+    if (!s3dNetPickerEl) return;
+    if (!e.target || !e.target.closest) return;
+    if (e.target.closest('#s3dNetPicker')) return;
+    if (e.target.closest('#s3dNetBtn')) return;
+    closeShape3dNetPicker();
+    if (e.target === canvas) { e.preventDefault(); e.stopPropagation(); }
+  }
+
   // ---- Net picker (cube / cuboid / prisms: all 11 nets) ----
   function openShape3dNetPicker(obj) {
     closeShape3dNetPicker();
@@ -5143,7 +5232,7 @@
       cells.forEach((c) => {
         svg += '<rect x="' + (c.x * sc + ox).toFixed(1) + '" y="' + (c.y * sc + oy).toFixed(1) +
           '" width="' + (c.w * sc).toFixed(1) + '" height="' + (c.h * sc).toFixed(1) +
-          '" fill="' + ((obj.faceColors || {})[c.face] || (currentTheme === 'dark' ? '#334155' : '#e2e8f0')) +
+          '" fill="' + (obj.noFill ? 'none' : ((obj.faceColors || {})[c.face] || (currentTheme === 'dark' ? '#334155' : '#e2e8f0'))) +
           '" stroke="' + (currentTheme === 'dark' ? '#e2e8f0' : '#0f172a') + '" stroke-width="1"/>';
       });
       svg += '</svg>';
@@ -5160,6 +5249,8 @@
     el.style.left = Math.max(8, rect.left + rect.width / 2 - 160) + 'px';
     el.style.top = Math.max(8, rect.top + 80) + 'px';
     s3dNetPickerEl = el;
+    document.addEventListener('mousedown', onNetPickerOutsideDown, true);
+    document.addEventListener('touchstart', onNetPickerOutsideDown, { capture: true, passive: false });
     el.querySelectorAll('[data-s3d-net]').forEach((btn) => {
       btn.addEventListener('click', () => {
         pushHistory();
@@ -5175,6 +5266,8 @@
   function closeShape3dNetPicker() {
     if (s3dNetPickerEl && s3dNetPickerEl.parentNode) s3dNetPickerEl.parentNode.removeChild(s3dNetPickerEl);
     s3dNetPickerEl = null;
+    document.removeEventListener('mousedown', onNetPickerOutsideDown, true);
+    document.removeEventListener('touchstart', onNetPickerOutsideDown, { capture: true });
   }
 
   // @s3d-geometry-end
@@ -5826,6 +5919,71 @@
     });
 
     // Instruments controls
+    // v4.11: an instrument toggled on lands inside the frame being worked on.
+    // Working frame = the frame containing the centre of the current view;
+    // if none contains it, the viewport centre itself. The instrument only
+    // moves when it is currently outside that frame, so a deliberately
+    // placed instrument stays where the teacher left it.
+    function workingFrameTarget() {
+      const rect = canvas.getBoundingClientRect();
+      const c = screenToWorld(rect.width / 2, rect.height / 2);
+      for (let i = board.frames.length - 1; i >= 0; i--) {
+        const fr = board.frames[i];
+        const local = fr.rotation ? unrotatePoint(c.x, c.y, fr.x + fr.w / 2, fr.y + fr.h / 2, fr.rotation) : c;
+        if (local.x >= fr.x && local.x <= fr.x + fr.w && local.y >= fr.y && local.y <= fr.y + fr.h) {
+          return { frame: fr, x: fr.x + fr.w / 2, y: fr.y + fr.h / 2 };
+        }
+      }
+      return { frame: null, x: c.x, y: c.y };
+    }
+    function instrumentAnchor(key) {
+      const inst = board.instruments[key];
+      if (!inst) return null;
+      if (key === 'ruler') {
+        const w = (inst.lengthCm || 30) * PX_PER_CM;
+        return { x: inst.x + w / 2, y: inst.y + (inst.heightPx || 54) / 2 };
+      }
+      if (key === 'protractor') return { x: inst.x, y: inst.y };
+      if (key === 'compass') return { x: inst.nx, y: inst.ny };
+      return null;
+    }
+    function placeInstrumentInWorkingFrame(key) {
+      const inst = board.instruments[key];
+      if (!inst) return;
+      const target = workingFrameTarget();
+      const a = instrumentAnchor(key);
+      // Already inside the working frame (or on screen when there is no
+      // frame)? Leave it where the teacher put it.
+      if (target.frame) {
+        if (a && a.x >= target.frame.x && a.x <= target.frame.x + target.frame.w &&
+            a.y >= target.frame.y && a.y <= target.frame.y + target.frame.h) return;
+      } else if (a) {
+        const rect = canvas.getBoundingClientRect();
+        const s = worldToScreen(a.x, a.y);
+        if (s.x >= 0 && s.x <= rect.width && s.y >= 0 && s.y <= rect.height) return;
+      }
+      // Move it to the frame centre (clamped inside the frame when there is one).
+      if (key === 'ruler') {
+        const w = (inst.lengthCm || 30) * PX_PER_CM;
+        const h = inst.heightPx || 54;
+        let nx = target.x - w / 2, ny = target.y - h / 2;
+        if (target.frame) {
+          nx = Math.max(target.frame.x, Math.min(target.frame.x + target.frame.w - w, nx));
+          ny = Math.max(target.frame.y, Math.min(target.frame.y + target.frame.h - h, ny));
+          // Frame narrower than the ruler: centre it anyway (it can be dragged).
+          if (w > target.frame.w) nx = target.frame.x + target.frame.w / 2 - w / 2;
+          if (h > target.frame.h) ny = target.frame.y + target.frame.h / 2 - h / 2;
+        }
+        inst.x = nx; inst.y = ny;
+      } else if (key === 'protractor') {
+        inst.x = target.x; inst.y = target.y;
+      } else if (key === 'compass') {
+        const d = dist(inst.nx, inst.ny, inst.px, inst.py) || 150;
+        inst.nx = target.x; inst.ny = target.y;
+        inst.px = target.x + d; inst.py = target.y;
+      }
+    }
+
     const btnToggleProtractor = document.getElementById('btnToggleProtractor');
     const btnToggleRuler = document.getElementById('btnToggleRuler');
     const btnToggleCompass = document.getElementById('btnToggleCompass');
@@ -5836,6 +5994,7 @@
       btnToggleProtractor.addEventListener('click', () => {
         pushHistory();
         board.instruments.protractor.visible = !board.instruments.protractor.visible;
+        if (board.instruments.protractor.visible) placeInstrumentInWorkingFrame('protractor');
         window.BoardSync.send('instrument_update', { key: 'protractor', state: board.instruments.protractor });
         updateReadouts();
         requestRender();
@@ -5845,6 +6004,7 @@
       btnToggleRuler.addEventListener('click', () => {
         pushHistory();
         board.instruments.ruler.visible = !board.instruments.ruler.visible;
+        if (board.instruments.ruler.visible) placeInstrumentInWorkingFrame('ruler');
         window.BoardSync.send('instrument_update', { key: 'ruler', state: board.instruments.ruler });
         updateReadouts();
         requestRender();
@@ -5854,6 +6014,7 @@
       btnToggleCompass.addEventListener('click', () => {
         pushHistory();
         board.instruments.compass.visible = !board.instruments.compass.visible;
+        if (board.instruments.compass.visible) placeInstrumentInWorkingFrame('compass');
         window.BoardSync.send('instrument_update', { key: 'compass', state: board.instruments.compass });
         updateReadouts();
         requestRender();
@@ -5863,6 +6024,7 @@
       btnCompassDrawCircle.addEventListener('click', () => {
         if (!board.instruments.compass.visible) {
           board.instruments.compass.visible = true;
+          placeInstrumentInWorkingFrame('compass');
           window.BoardSync.send('instrument_update', { key: 'compass', state: board.instruments.compass });
         }
         drawCompassCircleAction();
@@ -5872,6 +6034,7 @@
       btnStampProtractorRay.addEventListener('click', () => {
         if (!board.instruments.protractor.visible) {
           board.instruments.protractor.visible = true;
+          placeInstrumentInWorkingFrame('protractor');
           window.BoardSync.send('instrument_update', { key: 'protractor', state: board.instruments.protractor });
         }
         stampProtractorRayAction();

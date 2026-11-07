@@ -1,4 +1,32 @@
-# Geometry Whiteboard — Argon v4.10
+# Geometry Whiteboard — Argon v4.11
+
+## v4.11 — what is new (6 items, built on v4.10)
+1. **Select tool: left-drag = select, right-drag = pan** — the v4.10
+   right-drag marquee is reverted. Left-drag on empty board draws the
+   dashed marquee box; right-drag pans the board in any tool; a plain
+   right-click still opens the frame menu.
+2. **360° rotation for 3D shapes** — drag the body of an already-selected
+   shape to rotate it: sideways = spin, up/down = tilt, a full 360°+ in one
+   drag with no snap-back. The rotate handle is fixed the same way (v4.10
+   could only turn it 180° per drag). Dragging a shape that is not selected
+   yet still moves it. Tilt visibly rotates cube, cuboid and prisms;
+   cylinder, cone and hemisphere do not tilt yet (their tilt rendering is
+   a follow-up); spinning them is invisible because they are symmetric.
+3. **Net picker scrolls with the mouse wheel** — hovering over the 11-net
+   popup + wheel scrolls the nets; outside the popup the wheel still zooms.
+4. **Net picker closes on click outside** — left-click anywhere outside the
+   popup closes it (a board click is swallowed, so nothing is drawn or
+   selected). The Net button now toggles the popup.
+5. **Re-selecting a 3D shape restores all its options + "no colour" fill**
+   — clicking a shape always selects the shape, even where writing lies
+   over it, so the colour / net / open / rotate / resize / delete options
+   always appear. A new ✕ swatch clears all face colours, leaving the
+   shape as wireframe (edges only); colouring a face again ends wireframe
+   mode.
+6. **Instruments land inside the working frame** — tapping Ruler, Compass
+   or Protractor now places it inside the frame you are looking at (the
+   frame containing the centre of the view), instead of at a fixed spot on
+   the board. An instrument you placed deliberately stays where you put it.
 
 ## v4.10 — what is new (6 fixes + 3D shapes, built on v4.9)
 1. **Right-drag marquee-select in Select** — a right-button drag in Select
