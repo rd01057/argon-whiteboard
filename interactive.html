@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<!-- Argon v4.11 -->
+<!-- Argon v4.12 (built on v4.11) -->
 
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
@@ -45,6 +45,8 @@ html, body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background-color: var(--bg-surface);
   color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 input, select, button {
@@ -64,7 +66,11 @@ input[type="text"], input[type="password"], input[type="number"] {
   background: #cbd5e1;
   border-radius: 3px;
 }
+body[data-theme="dark"] .scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #334155;
+}
 
+/* Premium pill & button micro-interactions */
 .tool-btn {
   display: inline-flex;
   align-items: center;
@@ -77,7 +83,7 @@ input[type="text"], input[type="password"], input[type="number"] {
   background: transparent;
   border: 1px solid transparent;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.14s ease, color 0.14s ease, border-color 0.14s ease, transform 0.1s ease;
   white-space: nowrap;
 }
 
@@ -98,46 +104,53 @@ input[type="text"], input[type="password"], input[type="number"] {
   align-items: center;
   gap: 5px;
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 12px;
   font-weight: 500;
-  color: #475569;
-  background: #f8fafc;
+  color: #334155;
+  background: #ffffff;
   border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: background-color 0.14s ease, color 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease, transform 0.1s ease;
   white-space: nowrap;
 }
 
 .subtool-btn:hover {
   background: #f1f5f9;
   color: #0f172a;
+  border-color: #cbd5e1;
+}
+
+.subtool-btn:active {
+  transform: translateY(0.5px);
 }
 
 .subtool-btn.active {
-  background: #1e293b;
+  background: #2563eb;
   color: #ffffff;
-  border-color: #0f172a;
+  border-color: #1d4ed8;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.28);
 }
 
 .swatch-btn {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 9999px;
   border: 2px solid #ffffff;
   box-shadow: 0 0 0 1px #cbd5e1;
   cursor: pointer;
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  transition: transform 0.14s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.14s ease;
   flex-shrink: 0;
 }
 
 .swatch-btn:hover {
-  transform: scale(1.1);
+  transform: scale(1.12);
 }
 
 .swatch-btn.active {
-  box-shadow: 0 0 0 2px #2563eb;
-  transform: scale(1.12);
+  box-shadow: 0 0 0 2px #2563eb, 0 2px 6px rgba(37, 99, 235, 0.35);
+  transform: scale(1.14);
 }
 
 .readout-pill {
@@ -146,13 +159,43 @@ input[type="text"], input[type="password"], input[type="number"] {
   gap: 5px;
   padding: 3px 9px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   background: #f1f5f9;
   color: #1e293b;
   border: 1px solid #e2e8f0;
   white-space: nowrap;
+}
+
+/* Segmented control group for tidy contextual sub-bars */
+.tool-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(241, 245, 249, 0.85);
+  border: 1px solid #e2e8f0;
+}
+body[data-theme="dark"] .tool-cluster {
+  background: rgba(15, 23, 42, 0.65);
+  border-color: #1e293b;
+}
+.tool-cluster .subtool-btn {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  padding: 4px 9px;
+  border-radius: 7px;
+}
+.tool-cluster .subtool-btn:hover {
+  background: rgba(148, 163, 184, 0.16);
+}
+.tool-cluster .subtool-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3);
 }
 
 #boardCanvas {
@@ -162,83 +205,110 @@ input[type="text"], input[type="password"], input[type="number"] {
   touch-action: none;
 }
 
-/* v4: icon-only buttons (original generic symbols, not copied artwork) */
+/* v4: icon-only buttons (original generic symbols, refined for v4.12) */
 .icon-btn {
-  width: 44px; height: 44px;
+  width: 40px; height: 40px;
   background: #1e3a8a; color: #ffffff;
-  border: 1px solid #1e40af; border-radius: 10px;
+  border: 1px solid rgba(59, 130, 246, 0.28); border-radius: 11px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 20px; cursor: pointer; flex-shrink: 0;
+  font-size: 18px; cursor: pointer; flex-shrink: 0;
+  transition: background-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15);
 }
-.icon-btn:hover { background: #2563eb; }
-.icon-btn.active { background: #3b82f6; box-shadow: inset 0 0 0 2px #93c5fd; }
-.icon-btn.icon-green { background: #059669; border-color: #047857; }
+.icon-btn:hover { background: #2563eb; transform: translateY(-0.5px); }
+.icon-btn:active { transform: translateY(0.5px); }
+.icon-btn.active {
+  background: #2563eb;
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.45), 0 3px 10px rgba(37, 99, 235, 0.35);
+}
+.icon-btn.icon-green { background: #059669; border-color: #10b981; }
 .icon-btn.icon-green:hover { background: #10b981; }
-.icon-btn.icon-red { background: #dc2626; border-color: #b91c1c; }
+.icon-btn.icon-red { background: #dc2626; border-color: #f87171; }
 .icon-btn.icon-red:hover { background: #ef4444; }
-.icon-btn.icon-disabled { opacity: 0.4; pointer-events: none; }
+.icon-btn.icon-disabled { opacity: 0.36; pointer-events: none; }
+
 #leftToolbar {
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 6px;
   padding: 10px 8px; background: #ffffff; border-right: 1px solid #e2e8f0;
   z-index: 30; flex-shrink: 0; overflow-y: auto;
+  align-items: center;
 }
+.toolbar-sep {
+  width: 24px; height: 1px; background: #e2e8f0; margin: 2px 0; flex-shrink: 0;
+}
+body[data-theme="dark"] .toolbar-sep { background: #1e293b; }
+
 #classTabBar {
-  display: flex; gap: 6px; padding: 6px 10px;
+  display: flex; gap: 6px; padding: 5px 12px;
   background: #f8fafc; border-bottom: 1px solid #e2e8f0;
   overflow-x: auto; flex-shrink: 0; align-items: center;
+  min-height: 36px;
 }
 .class-tab-btn {
-  padding: 4px 10px; border-radius: 999px; border: 1px solid #cbd5e1;
-  background: #f1f5f9; font-size: 12px; font-weight: 600; color: #334155;
+  padding: 3.5px 11px; border-radius: 999px; border: 1px solid #cbd5e1;
+  background: #f1f5f9; font-size: 11.5px; font-weight: 600; color: #334155;
   white-space: nowrap; cursor: pointer;
+  transition: all 0.14s ease;
 }
-.class-tab-btn.active { background: #2563eb; color: #ffffff; border-color: #1d4ed8; }
-#topRightStack { display: flex; gap: 6px; align-items: flex-start; flex-shrink: 0; }
+.class-tab-btn:hover { border-color: #94a3b8; }
+.class-tab-btn.active {
+  background: #2563eb; color: #ffffff; border-color: #1d4ed8;
+  box-shadow: 0 1px 4px rgba(37, 99, 235, 0.3);
+}
+
+#topRightStack { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
 #voiceStackCol { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+
+/* Contextual sub-toolbar row — fixed min-height prevents vertical layout jump when switching tools */
+#contextSubBar {
+  min-height: 44px;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
 /* v4.3: frame right-click menu (icon-only, dark-blue buttons like the toolbar) */
-#frameContextMenu { position: fixed; z-index: 100; display: none; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.25); padding: 8px; }
-body[data-theme="dark"] #frameContextMenu { background: #1e293b; border-color: #334155; }
+#frameContextMenu {
+  position: fixed; z-index: 100; display: none;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(10px);
+  border: 1px solid #cbd5e1; border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.24); padding: 8px;
+}
+body[data-theme="dark"] #frameContextMenu {
+  background: rgba(30, 41, 59, 0.96);
+  border-color: #334155;
+}
 .frame-menu-row { display: flex; gap: 6px; align-items: center; }
 #unlockProgressWrap { width: 160px; height: 10px; background: #e2e8f0; border-radius: 999px; overflow: hidden; margin-top: 6px; }
+body[data-theme="dark"] #unlockProgressWrap { background: #0f172a; }
 #unlockProgressBar { height: 100%; width: 0%; background: #2563eb; }
 .frame-menu-hint { font-size: 11px; color: #475569; margin-top: 4px; }
 body[data-theme="dark"] .frame-menu-hint { color: #cbd5e1; }
-/* v4.5/v4.6: landscape phones can scroll the page (portrait / desktop / laptop unchanged).
-   The shell is a fixed full-screen app (html, body overflow hidden), which on a
-   landscape phone leaves the board as a thin strip with no way to scroll up/down.
-   This rule switches on for ANY touch device in landscape (pointer:coarse) —
-   no size guessing. On those screens the page scrolls vertically (drag the
-   header / sync bar / left toolbar area to scroll), the board shell is a full
-   100dvh tall so scrolling the header away leaves the board filling the
-   screen, and the long Select hint hides to save header space.
-   The canvas keeps touch-action:none, so drawing / pan / pinch on the board
-   itself are untouched. Portrait is left exactly as v4.2 — it scrolls fine.
-   To scroll back up after scrolling down, drag the top bars or the left
-   toolbar strip — dragging on the board itself draws/pans, as before.
-   v4.8: the old second clause, (orientation:landscape) and (max-height:700px),
-   also fired on short desktop/laptop windows, making the page scrollable under
-   the mouse wheel there — so it is dropped; the pointer:coarse clause is the
-   whole rule now. */
+
+/* v4.5/v4.6/v4.8: landscape phones can scroll the page (portrait / desktop / laptop unchanged). */
 @media (orientation: landscape) and (pointer: coarse) {
   html, body { height: auto !important; overflow-y: auto !important; overflow-x: hidden !important; }
   body { min-height: 100dvh; }
   #boardShell { flex: none !important; height: 100vh !important; height: 100dvh !important; }
   .select-hint { display: none !important; }
 }
+
 /* v4.8: chat panel, image lightbox, teacher PIN modal, unread badge */
 #chatPanel { display: none; position: absolute; right: 12px; top: 12px; bottom: 12px; z-index: 30; }
 #chatPanel.open { display: flex; }
-#chatPanel .chat-panel-inner { background: #ffffff; border-color: #e2e8f0; color: #1e293b; }
+#chatPanel .chat-panel-inner { background: rgba(255, 255, 255, 0.96); backdrop-filter: blur(12px); border-color: #e2e8f0; color: #1e293b; }
 #chatPanel .chat-panel-header { background: #f8fafc; border-bottom: 1px solid #e2e8f0; }
 #chatList { scrollbar-width: thin; user-select: text; -webkit-user-select: text; }
-.chat-bubble { max-width: 92%; padding: 6px 10px; border-radius: 12px; font-size: 13px; line-height: 1.4; background: #f1f5f9; color: #1e293b; word-break: break-word; }
+.chat-bubble { max-width: 92%; padding: 7px 11px; border-radius: 12px; font-size: 13px; line-height: 1.4; background: #f1f5f9; color: #1e293b; word-break: break-word; }
 .chat-bubble.own { background: #dbeafe; margin-left: auto; }
 .chat-bubble .chat-from { font-size: 10px; font-weight: 700; color: #64748b; margin-bottom: 2px; }
 .chat-bubble.own .chat-from { color: #1d4ed8; }
 .chat-img { max-width: 100%; max-height: 140px; border-radius: 8px; cursor: zoom-in; display: block; }
 .chat-add-board { font-size: 11px; font-weight: 600; color: #1d4ed8; cursor: pointer; background: none; border: none; padding: 2px 0 0; text-align: left; }
-#chatInput { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 999px; border: 1px solid #cbd5e1; font-size: 13px; outline: none; background: #ffffff; color: #1e293b; }
-#btnChatSend, #btnChatAddImage { width: 34px; height: 34px; border-radius: 999px; border: none; font-size: 16px; font-weight: 700; cursor: pointer; flex-shrink: 0; }
+body[data-theme="dark"] .chat-add-board { color: #60a5fa; }
+#chatInput { flex: 1; min-width: 0; padding: 7px 11px; border-radius: 999px; border: 1px solid #cbd5e1; font-size: 13px; outline: none; background: #ffffff; color: #1e293b; }
+#btnChatSend, #btnChatAddImage { width: 34px; height: 34px; border-radius: 999px; border: none; font-size: 16px; font-weight: 700; cursor: pointer; flex-shrink: 0; transition: transform 0.1s ease; }
+#btnChatSend:hover, #btnChatAddImage:hover { transform: scale(1.05); }
 #btnChatSend { background: #2563eb; color: #ffffff; }
 #btnChatAddImage { background: #e2e8f0; color: #1e293b; }
 .chat-unread-badge { position: absolute; top: -4px; right: -4px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: #dc2626; color: #ffffff; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; pointer-events: none; }
@@ -249,7 +319,69 @@ body[data-theme="dark"] .frame-menu-hint { color: #cbd5e1; }
 #teacherPinModal { display: none; }
 #teacherPinModal.open { display: flex; }
 #teacherPinModal input[type="password"] { width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid #cbd5e1; font-size: 15px; letter-spacing: 2px; outline: none; background: #ffffff; color: #1e293b; }
-body[data-theme="dark"] #chatPanel .chat-panel-inner { background: #1e293b; border-color: #334155; color: #e2e8f0; }
+
+/* Floating bottom-right HUD pill (Zoom controls + Quick Frame Jumper) */
+#floatingZoomHud {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(10px);
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.12);
+  font-size: 11.5px;
+}
+body[data-theme="dark"] #floatingZoomHud {
+  background: rgba(15, 23, 42, 0.90);
+  border-color: #334155;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+.hud-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: #334155;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.hud-btn:hover {
+  background: rgba(148, 163, 184, 0.2);
+  color: #0f172a;
+}
+body[data-theme="dark"] .hud-btn {
+  color: #cbd5e1;
+}
+body[data-theme="dark"] .hud-btn:hover {
+  background: rgba(148, 163, 184, 0.18);
+  color: #ffffff;
+}
+.hud-sep {
+  width: 1px;
+  height: 14px;
+  background: #cbd5e1;
+  margin: 0 2px;
+}
+body[data-theme="dark"] .hud-sep {
+  background: #334155;
+}
+
+/* Dark theme overrides */
+body[data-theme="dark"] #chatPanel .chat-panel-inner { background: rgba(30, 41, 59, 0.96); border-color: #334155; color: #e2e8f0; }
 body[data-theme="dark"] #chatPanel .chat-panel-header { background: #0f172a; border-color: #1e293b; }
 body[data-theme="dark"] .chat-bubble { background: #334155; color: #e2e8f0; }
 body[data-theme="dark"] .chat-bubble.own { background: #1e3a8a; }
@@ -257,27 +389,29 @@ body[data-theme="dark"] .chat-bubble .chat-from { color: #94a3b8; }
 body[data-theme="dark"] .chat-bubble.own .chat-from { color: #93c5fd; }
 body[data-theme="dark"] #chatInput { background: #0f172a; color: #e2e8f0; border-color: #334155; }
 body[data-theme="dark"] #btnChatAddImage { background: #334155; color: #e2e8f0; }
-body[data-theme="dark"] #teacherPinModal > div { background: #1e293b; }
+body[data-theme="dark"] #teacherPinModal > div { background: #1e293b; border-color: #334155; }
 body[data-theme="dark"] #teacherPinModal h2 { color: #f8fafc; }
 body[data-theme="dark"] #teacherPinModal p { color: #cbd5e1; }
 body[data-theme="dark"] #teacherPinModal input[type="password"] { background: #0f172a; color: #e2e8f0; border-color: #334155; }
-/* v4 dark theme: full restyle, not just the page background */
 body[data-theme="dark"] { background: #0f172a; color: #e2e8f0; }
 body[data-theme="dark"] header { background: #0f172a !important; border-color: #1e293b !important; }
 body[data-theme="dark"] header h1 { color: #f8fafc; }
-body[data-theme="dark"] header .bg-slate-50 { background: #1e293b !important; }
+body[data-theme="dark"] header .bg-slate-50 { background: #111827 !important; border-color: #1e293b !important; }
 body[data-theme="dark"] .readout-pill { background: #1e293b; color: #e2e8f0; border-color: #334155; }
 body[data-theme="dark"] main { background: #0f172a; }
 body[data-theme="dark"] #leftToolbar { background: #0f172a; border-color: #1e293b; }
-body[data-theme="dark"] #classTabBar { background: #111827; border-color: #1e293b; }
-body[data-theme="dark"] .class-tab-btn { background: #1e293b; color: #e2e8f0; border-color: #334155; }
-body[data-theme="dark"] .class-tab-btn.active { background: #2563eb; color: #ffffff; }
+body[data-theme="dark"] #classTabBar { background: #0b1120; border-color: #1e293b; }
+body[data-theme="dark"] .class-tab-btn { background: #1e293b; color: #cbd5e1; border-color: #334155; }
+body[data-theme="dark"] .class-tab-btn.active { background: #2563eb; color: #ffffff; border-color: #3b82f6; }
 body[data-theme="dark"] .subtool-btn { background: #1e293b; color: #e2e8f0; border-color: #334155; }
-body[data-theme="dark"] .subtool-btn.active { background: #2563eb; color: #ffffff; }
+body[data-theme="dark"] .subtool-btn:hover { background: #334155; color: #ffffff; }
+body[data-theme="dark"] .subtool-btn.active { background: #2563eb; color: #ffffff; border-color: #3b82f6; }
+body[data-theme="dark"] .swatch-btn { border-color: #1e293b; box-shadow: 0 0 0 1px #475569; }
+body[data-theme="dark"] .swatch-btn.active { box-shadow: 0 0 0 2px #3b82f6, 0 2px 6px rgba(59, 130, 246, 0.45); }
 body[data-theme="dark"] input[type="text"], body[data-theme="dark"] input[type="number"] { background: #0f172a; color: #e2e8f0; border-color: #334155; }
-body[data-theme="dark"] #clearConfirmModal > div { background: #1e293b; }
-body[data-theme="dark"] #clearConfirmModal h2 { color: #f8fafc; }
-body[data-theme="dark"] #clearConfirmModal p { color: #cbd5e1; }
+body[data-theme="dark"] #clearConfirmModal > div, body[data-theme="dark"] #shortcutsModal > div { background: #1e293b; border-color: #334155; }
+body[data-theme="dark"] #clearConfirmModal h2, body[data-theme="dark"] #shortcutsModal h2 { color: #f8fafc; }
+body[data-theme="dark"] #clearConfirmModal p, body[data-theme="dark"] #shortcutsModal p { color: #cbd5e1; }
 
   </style>
 </head>
@@ -286,19 +420,21 @@ body[data-theme="dark"] #clearConfirmModal p { color: #cbd5e1; }
 
   <!-- TOP NAVIGATION & TOOL BAR -->
   <header class="bg-white border-b border-slate-200 z-30 shadow-sm flex-shrink-0">
-    <!-- Row 1: App Title, Main Tool Tabs, Live Readouts, Sync Toggle & Clear Drawings -->
+    <!-- Row 1: App Title, Live Readouts, Utility Actions & Room Sync -->
     <div class="px-3 py-1.5 flex items-center justify-between gap-2 overflow-x-auto scrollbar-thin">
       <!-- Brand Title -->
-      <div class="flex items-center gap-2 flex-shrink-0">
-        <div class="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
+      <div class="flex items-center gap-2.5 flex-shrink-0">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center font-bold text-sm shadow-sm">
           △
         </div>
         <div class="hidden sm:block">
-          <h1 class="text-sm font-bold text-slate-900 leading-tight">Geometry Whiteboard</h1>
-          <p id="activeRoomLabel" class="text-[11px] font-medium text-slate-500 leading-none">Offline / Solo <span id="teacherBadge" class="hidden ml-1 px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-bold">Teacher</span></p>
+          <div class="flex items-center gap-1.5">
+            <h1 class="text-sm font-bold text-slate-900 leading-tight tracking-tight">Geometry Whiteboard</h1>
+            <span id="teacherBadge" class="hidden px-1.5 py-0.5 rounded-full bg-emerald-600 text-white text-[10px] font-bold tracking-wide uppercase">Teacher</span>
+          </div>
+          <p id="activeRoomLabel" class="text-[11px] font-medium text-slate-500 leading-none mt-0.5">Offline / Solo</p>
         </div>
       </div>
-
 
       <!-- Live Geometry Readouts Bar -->
       <div class="flex items-center gap-1.5 flex-shrink-0">
@@ -307,43 +443,63 @@ body[data-theme="dark"] #clearConfirmModal p { color: #cbd5e1; }
         <span id="readoutLine" class="readout-pill hidden md:inline-flex" title="Measured / Selected Line Length">L = 0.00 cm</span>
       </div>
 
-      <!-- Right Utility Actions: Pan, Delete Selected, Clear Drawings, Room Sync -->
+      <!-- Right Utility Actions: Pan, Spotlight, Bring Students, Board Actions, Theme, Room Sync, Export PDF -->
       <div class="flex items-center gap-1.5 flex-shrink-0">
-        <button type="button" id="btnPanMode" class="subtool-btn" title="Toggle 1-Finger / Mouse Drag Board Panning">
+        <button type="button" id="btnPanMode" class="subtool-btn" title="Toggle 1-Finger / Mouse Drag Board Panning (Spacebar)">
           <span>✋</span><span class="hidden lg:inline">Pan</span>
         </button>
-        <button type="button" id="btnDeleteSelected" class="subtool-btn teacher-only text-red-600 border-red-200 hover:bg-red-50 opacity-40 pointer-events-none" title="Delete Selected Object (Delete / Backspace)">
-          <span>🗑</span><span class="hidden lg:inline">Delete</span>
+
+        <!-- v4.12 ADDITION: Teacher "Bring Students Here" & Frame Spotlight Curtain -->
+        <button type="button" id="btnBringStudents" class="subtool-btn teacher-only text-indigo-600 border-indigo-200 hover:bg-indigo-50" title="Sync all connected students' viewports to your current frame/view">
+          <span>📡</span><span class="hidden xl:inline">Focus class</span>
         </button>
-        <button type="button" id="btnClearDrawings" class="subtool-btn teacher-only text-amber-700 border-amber-200 hover:bg-amber-50" title="Clear Drawings (Keeps Instruments)">
-          <span>🧹</span><span class="hidden sm:inline">Clear drawings</span>
+        <button type="button" id="btnToggleSpotlight" class="subtool-btn teacher-only" title="Toggle step-by-step Spotlight Curtain over the working frame">
+          <span>🎭</span><span class="hidden xl:inline">Curtain</span>
+        </button>
+
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5 teacher-only"></div>
+
+        <button type="button" id="btnDeleteSelected" class="subtool-btn teacher-only text-red-600 border-red-200 hover:bg-red-50 opacity-40 pointer-events-none" title="Delete Selected Object (Delete / Backspace)">
+          <span>🗑</span><span class="hidden xl:inline">Delete</span>
+        </button>
+        <button type="button" id="btnClearDrawings" class="subtool-btn teacher-only text-amber-700 border-amber-200 hover:bg-amber-50" title="Clear Drawings (Keeps Instruments, Frames & Images)">
+          <span>🧹</span><span class="hidden md:inline">Clear</span>
         </button>
         <button type="button" id="btnNewBoard" class="subtool-btn teacher-only text-amber-700 border-amber-200 hover:bg-amber-50" title="New board: clears this tab's board and its cloud copy (with confirm)">
-          <span>🆕</span><span class="hidden lg:inline">New board</span>
+          <span>🆕</span><span class="hidden xl:inline">New</span>
+        </button>
+
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700 mx-0.5"></div>
+
+        <button type="button" id="btnShortcutsHelp" class="subtool-btn" title="Keyboard shortcuts & gestures (?)">
+          <span>⌨</span>
         </button>
         <button type="button" id="btnThemeToggle" class="subtool-btn" title="Switch to light theme">
           <span>☀</span>
         </button>
-        <button type="button" id="btnToggleSyncBar" class="subtool-btn bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100" title="Toggle Supabase Realtime Room Sync Bar">
+        <button type="button" id="btnToggleSyncBar" class="subtool-btn bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100" title="Toggle Supabase Realtime Room Sync Drawer">
           <span id="syncStatusDot" class="w-2 h-2 rounded-full bg-slate-400"></span>
           <span id="syncStatusBadge" class="text-xs font-semibold">Room Sync</span>
-          <span id="peerCountBadge" class="text-[11px] bg-white px-1.5 py-0.5 rounded border border-blue-200 text-slate-600">1 device</span>
+          <span id="peerCountBadge" class="text-[11px] bg-white dark:bg-slate-800 px-1.5 py-0.5 rounded border border-blue-200 dark:border-slate-600 text-slate-600 dark:text-slate-300">1 device</span>
         </button>
-      </div>
 
-      <!-- v4.1: Export PDF stays top-right; voice buttons moved to the left toolbar (v4.1) -->
-      <div id="topRightStack">
-        <button type="button" id="btnExportPdf" class="icon-btn teacher-only" title="Export PDF">📥</button>
+        <!-- v4.1: Export PDF stays top-right -->
+        <div id="topRightStack">
+          <button type="button" id="btnExportPdf" class="icon-btn teacher-only" style="width:34px;height:34px;font-size:15px;border-radius:8px;" title="Export Frames to PDF">📥</button>
+        </div>
       </div>
     </div>
 
-    <!-- Row 2: Contextual Sub-Toolbar for Active Tab -->
-    <div class="px-3 py-1.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 overflow-x-auto scrollbar-thin">
+    <!-- Row 2: Contextual Sub-Toolbar for Active Tab (Calm, grouped, single-row layout) -->
+    <div id="contextSubBar" class="px-3 py-1.5 bg-slate-50 border-t border-slate-200/80 flex items-center justify-between gap-3 overflow-x-auto scrollbar-thin">
 
       <!-- SELECT TAB PANEL -->
-      <div data-tab-panel="select" class="flex items-center gap-2 text-xs text-slate-600 flex-wrap">
-        <span class="font-semibold text-slate-800">Selection Mode:</span>
-        <span class="select-hint">Click any shape, line, stroke, frame, image, text box, or instrument to move, resize, or rotate. Drag empty board to pan.</span>
+      <div data-tab-panel="select" class="flex items-center gap-2.5 text-xs text-slate-600 dark:text-slate-400 flex-wrap">
+        <span class="font-semibold text-slate-800 dark:text-slate-200">Select:</span>
+        <span class="select-hint">Left-drag empty board to marquee select · Right-drag or Space+drag to pan · Click a selected 3D shape and drag to spin/tilt 360°.</span>
+        <button type="button" id="btnDuplicateSelected" class="subtool-btn teacher-only hidden ml-1" title="Duplicate selected item(s) (Ctrl/Cmd+D)">
+          <span>⧉</span><span>Clone selected</span>
+        </button>
         <button type="button" id="btnCropImage" class="subtool-btn hidden ml-1" title="Crop the selected image: drag a rectangle over it, release to apply, Esc to cancel">
           <span>✂</span><span>Crop image</span>
         </button>
@@ -351,207 +507,239 @@ body[data-theme="dark"] #clearConfirmModal p { color: #cbd5e1; }
 
       <!-- PEN TAB PANEL -->
       <div data-tab-panel="pen" class="hidden flex items-center gap-3 flex-wrap">
-        <div class="flex items-center gap-1">
-          <button type="button" data-pen-sub="pen" class="subtool-btn active">✎ Pen</button>
-          <button type="button" data-pen-sub="highlighter" class="subtool-btn">🖍 Highlighter</button>
-          <button type="button" data-pen-sub="eraser" class="subtool-btn">⌫ Stroke Eraser</button>
-          <button type="button" data-pen-sub="measure" class="subtool-btn">📏 Measure Line (cm)</button>
+        <div class="tool-cluster" role="group" aria-label="Pen Mode">
+          <button type="button" data-pen-sub="pen" class="subtool-btn active" title="Freehand Pen (P)">✎ Pen</button>
+          <button type="button" data-pen-sub="highlighter" class="subtool-btn" title="Translucent Highlighter">🖍 Highlighter</button>
+          <button type="button" data-pen-sub="laser" class="subtool-btn" title="Live Laser Pointer — trails fade out automatically and sync to students (L)">🔴 Laser</button>
+          <button type="button" data-pen-sub="eraser" class="subtool-btn" title="Stroke / Object Eraser (E)">⌫ Eraser</button>
+          <button type="button" data-pen-sub="measure" class="subtool-btn" title="Draw Measured Segment in cm">📏 Measure (cm)</button>
         </div>
 
-        <div class="h-4 w-px bg-slate-300"></div>
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
 
         <!-- 5 Preset Colours + Custom Picker -->
         <div class="flex items-center gap-1.5" aria-label="Pen Colours">
-          <button type="button" data-pen-color="#0f172a" class="swatch-btn active" style="background:#0f172a" title="Ink Black"></button>
+          <button type="button" data-pen-color="#0f172a" class="swatch-btn active" style="background:#0f172a" title="Ink Black (auto-white in dark mode)"></button>
           <button type="button" data-pen-color="#2563eb" class="swatch-btn" style="background:#2563eb" title="Royal Blue"></button>
           <button type="button" data-pen-color="#dc2626" class="swatch-btn" style="background:#dc2626" title="Crimson Red"></button>
           <button type="button" data-pen-color="#059669" class="swatch-btn" style="background:#059669" title="Emerald Green"></button>
           <button type="button" data-pen-color="#d97706" class="swatch-btn" style="background:#d97706" title="Amber Orange"></button>
-          <input type="color" id="penColorCustom" value="#0f172a" class="w-6 h-6 rounded cursor-pointer border border-slate-300 bg-white p-0" title="Custom Pen Colour" />
+          <input type="color" id="penColorCustom" value="#0f172a" class="w-6 h-6 rounded cursor-pointer border border-slate-300 dark:border-slate-600 bg-white p-0" title="Custom Pen Colour" />
         </div>
 
-        <div class="h-4 w-px bg-slate-300"></div>
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
 
-        <!-- v4.10: Pen Thickness slider (1–20 px) replaces the 3 fixed widths -->
-        <label class="inline-flex items-center gap-1.5 text-xs text-slate-700" aria-label="Pen Thickness">
-          <span>Thickness:</span>
-          <input type="range" id="penThicknessSlider" min="1" max="20" step="1" value="4" class="w-28 cursor-pointer" title="Pen thickness in px" />
-          <span id="penThicknessReadout" class="font-semibold text-slate-800 w-10">4 px</span>
+        <!-- v4.10: Pen Thickness slider (1–20 px) -->
+        <label class="inline-flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300" aria-label="Pen Thickness">
+          <span class="font-medium">Size:</span>
+          <input type="range" id="penThicknessSlider" min="1" max="20" step="1" value="4" class="w-24 cursor-pointer accent-blue-600" title="Pen thickness in px (1–20)" />
+          <span id="penThicknessReadout" class="font-semibold text-slate-800 dark:text-slate-100 w-9 tabular-nums">4 px</span>
         </label>
 
-        <label class="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer ml-1">
+        <label class="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300 cursor-pointer ml-1">
           <input type="checkbox" id="chkSnapRuler" checked class="rounded text-blue-600" />
-          <span>Snap along Ruler edge</span>
+          <span>Snap to Ruler</span>
         </label>
       </div>
 
-      <!-- SHAPES TAB PANEL -->
-      <div data-tab-panel="shapes" class="hidden flex items-center gap-3 flex-wrap">
-        <div class="flex items-center gap-1">
-          <button type="button" data-shape-type="rect" class="subtool-btn active">▭ Rectangle</button>
-          <button type="button" data-shape-type="ellipse" class="subtool-btn">◯ Ellipse / Circle</button>
-          <button type="button" data-shape-type="triangle" class="subtool-btn">△ Triangle</button>
-          <button type="button" data-shape-type="diamond" class="subtool-btn">◇ Diamond</button>
-          <button type="button" data-shape-type="trapezium" class="subtool-btn">⏢ Trapezium</button>
-          <button type="button" id="btnInsertShapeNow" class="subtool-btn bg-blue-600 text-white border-blue-700 hover:bg-blue-700 hover:text-white ml-1">
-            + Insert Shape
-          </button>
+      <!-- SHAPES & LINES TAB PANEL (Consolidated into one clean bar with a sub-mode toggle, keeping every control accessible) -->
+      <div data-tab-panel="shapes" class="hidden flex items-center gap-2.5 flex-wrap">
+        <!-- 2D Shapes Cluster -->
+        <div class="tool-cluster" role="group" aria-label="2D Shapes">
+          <button type="button" data-shape-type="rect" class="subtool-btn active" title="Rectangle">▭ Rect</button>
+          <button type="button" data-shape-type="ellipse" class="subtool-btn" title="Ellipse / Circle">◯ Circle</button>
+          <button type="button" data-shape-type="triangle" class="subtool-btn" title="Triangle">△ Triangle</button>
+          <button type="button" data-shape-type="diamond" class="subtool-btn" title="Diamond / Rhombus">◇ Diamond</button>
+          <button type="button" data-shape-type="trapezium" class="subtool-btn" title="Trapezium">⏢ Trapezium</button>
         </div>
+        <button type="button" id="btnInsertShapeNow" class="subtool-btn bg-blue-600 text-white border-blue-700 hover:bg-blue-700 hover:text-white" title="Stamp selected shape at centre of view">
+          + Stamp Shape
+        </button>
 
-        <div class="h-4 w-px bg-slate-300"></div>
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
 
-        <div class="flex items-center gap-2 text-xs text-slate-700">
-          <label class="inline-flex items-center gap-1">
+        <!-- Lines Cluster (v4: lines live under Shapes) -->
+        <div class="tool-cluster" role="group" aria-label="Lines & Arrows">
+          <button type="button" data-line-type="line" class="subtool-btn" title="Straight Line">╱ Line</button>
+          <button type="button" data-line-type="arrow" class="subtool-btn" title="Arrow Line">↗ Arrow</button>
+          <button type="button" data-line-type="measure" class="subtool-btn" title="Measured Line (cm)">📏 Measured</button>
+        </div>
+        <button type="button" id="btnInsertLineNow" class="subtool-btn bg-blue-600 text-white border-blue-700 hover:bg-blue-700 hover:text-white" title="Stamp selected line at centre of view">
+          + Stamp Line
+        </button>
+
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
+
+        <!-- Styling controls for Shapes & Lines -->
+        <div class="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+          <label class="inline-flex items-center gap-1" title="Shape Fill Colour">
             <span>Fill:</span>
-            <input type="color" id="shapeFillPicker" value="#dbeafe" class="w-6 h-6 rounded cursor-pointer border border-slate-300 bg-white p-0" />
+            <input type="color" id="shapeFillPicker" value="#dbeafe" class="w-5 h-5 rounded cursor-pointer border border-slate-300 dark:border-slate-600 bg-white p-0" />
           </label>
-          <label class="inline-flex items-center gap-1 cursor-pointer">
+          <label class="inline-flex items-center gap-1 cursor-pointer" title="Transparent Shape Fill">
             <input type="checkbox" id="chkShapeNoFill" class="rounded text-blue-600" />
             <span>No fill</span>
           </label>
-          <label class="inline-flex items-center gap-1 ml-1">
+          <label class="inline-flex items-center gap-1" title="Shape Border Colour">
             <span>Border:</span>
-            <input type="color" id="shapeStrokePicker" value="#1d4ed8" class="w-6 h-6 rounded cursor-pointer border border-slate-300 bg-white p-0" />
+            <input type="color" id="shapeStrokePicker" value="#1d4ed8" class="w-5 h-5 rounded cursor-pointer border border-slate-300 dark:border-slate-600 bg-white p-0" />
+          </label>
+          <div class="tool-cluster" role="group" aria-label="Shape Border Width">
+            <button type="button" data-shape-width="2" class="subtool-btn" title="2px border">2px</button>
+            <button type="button" data-shape-width="3" class="subtool-btn active" title="3px border">3px</button>
+            <button type="button" data-shape-width="5" class="subtool-btn" title="5px border">5px</button>
+            <button type="button" data-shape-width="8" class="subtool-btn" title="8px border">8px</button>
+          </div>
+        </div>
+
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
+
+        <!-- Line styling controls -->
+        <div class="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+          <label class="inline-flex items-center gap-1" title="Line Colour">
+            <span>Line:</span>
+            <input type="color" id="lineColorPicker" value="#0f172a" class="w-5 h-5 rounded cursor-pointer border border-slate-300 dark:border-slate-600 bg-white p-0" />
+          </label>
+          <div class="tool-cluster" role="group" aria-label="Line Thickness">
+            <button type="button" data-line-width="2" class="subtool-btn" title="Thin line (2px)">2px</button>
+            <button type="button" data-line-width="3" class="subtool-btn active" title="Medium line (3px)">3px</button>
+            <button type="button" data-line-width="6" class="subtool-btn" title="Thick line (6px)">6px</button>
+          </div>
+          <label class="inline-flex items-center gap-1 cursor-pointer" title="Dashed Line">
+            <input type="checkbox" id="chkLineDashed" class="rounded text-blue-600" />
+            <span>Dashed</span>
           </label>
         </div>
-
-        <div class="flex items-center gap-1">
-          <button type="button" data-shape-width="2" class="subtool-btn">2px</button>
-          <button type="button" data-shape-width="3" class="subtool-btn active">3px</button>
-          <button type="button" data-shape-width="5" class="subtool-btn">5px</button>
-          <button type="button" data-shape-width="8" class="subtool-btn">8px</button>
-        </div>
-      </div>
-
-      <!-- LINES PANEL (v4: lines live under Shapes, not a separate top-level tool) -->
-      <div data-tab-panel="shapes" class="hidden flex items-center gap-3 flex-wrap">
-        <span class="text-xs font-semibold text-slate-800">Lines:</span>
-        <div class="flex items-center gap-1">
-          <button type="button" data-line-type="line" class="subtool-btn active">╱ Straight Line</button>
-          <button type="button" data-line-type="arrow" class="subtool-btn">↗ Arrow</button>
-          <button type="button" data-line-type="measure" class="subtool-btn">📏 Measured Line (cm)</button>
-          <button type="button" id="btnInsertLineNow" class="subtool-btn bg-blue-600 text-white border-blue-700 hover:bg-blue-700 hover:text-white ml-1">
-            + Insert Line
-          </button>
-        </div>
-
-        <div class="h-4 w-px bg-slate-300"></div>
-
-        <label class="inline-flex items-center gap-1.5 text-xs text-slate-700">
-          <span>Colour:</span>
-          <input type="color" id="lineColorPicker" value="#0f172a" class="w-6 h-6 rounded cursor-pointer border border-slate-300 bg-white p-0" />
-        </label>
-
-        <div class="flex items-center gap-1">
-          <button type="button" data-line-width="2" class="subtool-btn">Thin (2px)</button>
-          <button type="button" data-line-width="3" class="subtool-btn active">Medium (3px)</button>
-          <button type="button" data-line-width="6" class="subtool-btn">Thick (6px)</button>
-        </div>
-
-        <label class="inline-flex items-center gap-1 text-xs text-slate-700 cursor-pointer">
-          <input type="checkbox" id="chkLineDashed" class="rounded text-blue-600" />
-          <span>Dashed</span>
-        </label>
       </div>
 
       <!-- FRAMES TAB PANEL -->
       <div data-tab-panel="frames" class="hidden flex items-center gap-3 flex-wrap">
-        <div class="flex items-center gap-1">
-          <button type="button" id="btnAddFrameMobile" class="subtool-btn bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100">
-            📱 + Mobile Portrait (9:16)
-          </button>
+        <div class="flex items-center gap-1.5">
           <button type="button" id="btnAddFrameDesktop" class="subtool-btn bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100">
-            🖥 + Desktop Landscape (16:9)
+            🖥 + 16:9 Landscape
+          </button>
+          <button type="button" id="btnAddFrameMobile" class="subtool-btn bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100">
+            📱 + 9:16 Portrait
           </button>
         </div>
 
-        <div class="flex items-center gap-1 text-xs text-slate-700">
+        <div class="flex items-center gap-1 text-xs text-slate-700 dark:text-slate-300">
           <span>Custom:</span>
           <input type="number" id="frameCustomWInput" value="600" min="160" max="2400" class="w-16 px-1.5 py-0.5 text-xs border border-slate-300 rounded" title="Custom Frame Width" />
           <span>×</span>
           <input type="number" id="frameCustomHInput" value="450" min="160" max="2400" class="w-16 px-1.5 py-0.5 text-xs border border-slate-300 rounded" title="Custom Frame Height" />
-          <button type="button" id="btnAddFrameCustom" class="subtool-btn">+ Custom Frame</button>
+          <button type="button" id="btnAddFrameCustom" class="subtool-btn">+ Add</button>
         </div>
 
-        <div class="h-4 w-px bg-slate-300"></div>
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
 
-        <div class="flex items-center gap-1.5 text-xs text-slate-700">
-          <span>BG:</span>
+        <div class="flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300">
+          <span>Surface:</span>
           <input type="color" id="frameBgInput" value="#ffffff" class="w-6 h-6 rounded cursor-pointer border border-slate-300 bg-white p-0" title="Frame Background Colour" />
           <button type="button" data-frame-bg="#ffffff" class="swatch-btn" style="background:#ffffff" title="Pure White"></button>
           <button type="button" data-frame-bg="#fefce8" class="swatch-btn" style="background:#fefce8" title="Warm Notebook Cream"></button>
           <button type="button" data-frame-bg="#f0f9ff" class="swatch-btn" style="background:#f0f9ff" title="Blueprint Sky"></button>
           <button type="button" data-frame-bg="#f0fdf4" class="swatch-btn" style="background:#f0fdf4" title="Mint Chalkboard"></button>
         </div>
+
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
+
+        <!-- v4.12 ADDITION: Frame Paper Style selector (Grid / Isometric Dots / Lined / Blank) -->
+        <div class="tool-cluster" role="group" aria-label="Frame Paper Pattern">
+          <button type="button" data-frame-pattern="grid" class="subtool-btn active" title="Standard 1cm Square Grid">⊞ Grid</button>
+          <button type="button" data-frame-pattern="dots" class="subtool-btn" title="Isometric / Dot Grid for 3D & Geometry">∷ Dots</button>
+          <button type="button" data-frame-pattern="lined" class="subtool-btn" title="Ruled Notebook Lines">≡ Lined</button>
+          <button type="button" data-frame-pattern="blank" class="subtool-btn" title="Plain Blank Frame">▢ Blank</button>
+        </div>
       </div>
 
       <!-- INSTRUMENTS TAB PANEL -->
       <div data-tab-panel="instruments" class="hidden flex items-center gap-2 flex-wrap">
-        <button type="button" id="btnToggleProtractor" class="subtool-btn active">
-          📐 Protractor (0–180° &amp; 180–0°)
-        </button>
+        <div class="tool-cluster">
+          <button type="button" id="btnToggleRuler" class="subtool-btn">
+            📏 Ruler (0–30 cm)
+          </button>
+          <button type="button" id="btnToggleProtractor" class="subtool-btn">
+            📐 Protractor (0–180°)
+          </button>
+          <button type="button" id="btnToggleCompass" class="subtool-btn">
+            🧭 Compass
+          </button>
+        </div>
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
         <button type="button" id="btnStampProtractorRay" class="subtool-btn text-indigo-700 border-indigo-200 bg-indigo-50 hover:bg-indigo-100">
-          ↗ Stamp Ray Line
+          ↗ Stamp Ray
         </button>
         <button type="button" id="btnFlipProtractor" class="subtool-btn text-indigo-700 border-indigo-200 bg-indigo-50 hover:bg-indigo-100">
           ⇋ Flip Protractor
         </button>
-        <button type="button" id="btnToggleRuler" class="subtool-btn active">
-          📏 0–30 cm Ruler (mm ticks)
-        </button>
-        <button type="button" id="btnToggleCompass" class="subtool-btn active">
-          🧭 Drafting Compass
-        </button>
         <button type="button" id="btnCompassDrawCircle" class="subtool-btn bg-red-600 text-white border-red-700 hover:bg-red-700 hover:text-white">
-          ◯ Draw Compass Circle (r = cm)
+          ◯ Draw Compass Circle
         </button>
       </div>
 
       <!-- 3D SHAPES TAB PANEL (v4.10) -->
       <div data-tab-panel="3d" class="hidden flex items-center gap-2 flex-wrap">
-        <span class="text-xs font-semibold text-slate-800">3D shapes:</span>
-        <span class="text-xs text-slate-600">Tap a shape to place it on the board. Select it to open, colour and spin it.</span>
-        <button type="button" data-shape3d-kind="cube" class="subtool-btn" title="Cube — 6 square faces, 11 nets">▣ Cube</button>
-        <button type="button" data-shape3d-kind="cuboid" class="subtool-btn" title="Cuboid — 11 nets">▭ Cuboid</button>
-        <button type="button" data-shape3d-kind="cylinder" class="subtool-btn" title="Cylinder — net: rectangle + 2 circles">◯ Cylinder</button>
-        <button type="button" data-shape3d-kind="cone" class="subtool-btn" title="Cone — net: sector + circle">△ Cone</button>
-        <button type="button" data-shape3d-kind="sphere" class="subtool-btn" title="Sphere — cannot be unfolded">● Sphere</button>
-        <button type="button" data-shape3d-kind="hemisphere" class="subtool-btn" title="Hemisphere — cannot be unfolded">◒ Hemisphere</button>
-        <button type="button" data-shape3d-kind="rectPrism" class="subtool-btn" title="Rectangular prism — 11 nets">▬ Rect. prism</button>
-        <button type="button" data-shape3d-kind="squarePrism" class="subtool-btn" title="Square prism — net: 4 rectangles + 2 squares">▦ Square prism</button>
+        <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">3D Solids:</span>
+        <div class="tool-cluster">
+          <button type="button" data-shape3d-kind="cube" class="subtool-btn" title="Cube — 6 square faces, 11 nets">▣ Cube</button>
+          <button type="button" data-shape3d-kind="cuboid" class="subtool-btn" title="Cuboid — 11 nets">▭ Cuboid</button>
+          <button type="button" data-shape3d-kind="rectPrism" class="subtool-btn" title="Rectangular prism — 11 nets">▬ Rect. Prism</button>
+          <button type="button" data-shape3d-kind="squarePrism" class="subtool-btn" title="Square prism — 4 rectangles + 2 squares">▦ Sq. Prism</button>
+          <button type="button" data-shape3d-kind="cylinder" class="subtool-btn" title="Cylinder — net: rectangle + 2 circles">◯ Cylinder</button>
+          <button type="button" data-shape3d-kind="cone" class="subtool-btn" title="Cone — net: sector + circle">△ Cone</button>
+          <button type="button" data-shape3d-kind="sphere" class="subtool-btn" title="Sphere — 3D solid">● Sphere</button>
+          <button type="button" data-shape3d-kind="hemisphere" class="subtool-btn" title="Hemisphere — 3D solid">◒ Hemisphere</button>
+        </div>
+        <span class="text-[11px] text-slate-500 dark:text-slate-400 hidden xl:inline">Select a placed solid to unfold net, colour faces, or drag to spin 360°.</span>
       </div>
 
-      <!-- TEXT BOX TAB PANEL (v4) -->
-      <div data-tab-panel="textbox" class="hidden flex items-center gap-3 flex-wrap">
-        <span class="text-xs font-semibold text-slate-800">Text box:</span>
-        <span class="text-xs text-slate-600">Click the board, then type by keyboard. Click an existing box with this tool to edit it.</span>
-        <label class="inline-flex items-center gap-1.5 text-xs text-slate-700">
+      <!-- TEXT BOX TAB PANEL (v4 + v4.12 Quick Math Symbols) -->
+      <div data-tab-panel="textbox" class="hidden flex items-center gap-2.5 flex-wrap">
+        <span class="text-xs font-semibold text-slate-800 dark:text-slate-200">Text Box:</span>
+        <span class="text-xs text-slate-500 dark:text-slate-400 hidden md:inline">Click the board to type.</span>
+        <label class="inline-flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300">
           <span>Colour:</span>
-          <input type="color" id="textColorPicker" value="#0f172a" class="w-6 h-6 rounded cursor-pointer border border-slate-300 bg-white p-0" />
+          <input type="color" id="textColorPicker" value="#0f172a" class="w-5 h-5 rounded cursor-pointer border border-slate-300 bg-white p-0" />
         </label>
-        <label class="inline-flex items-center gap-1.5 text-xs text-slate-700">
+        <label class="inline-flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-300">
           <span>Size:</span>
-          <input type="number" id="textSizeInput" value="22" min="12" max="72" class="w-16 px-1.5 py-0.5 text-xs border border-slate-300 rounded" title="Text size in px" />
+          <input type="number" id="textSizeInput" value="22" min="12" max="72" class="w-14 px-1.5 py-0.5 text-xs border border-slate-300 rounded" title="Text size in px" />
         </label>
+        <div class="h-4 w-px bg-slate-300 dark:bg-slate-700"></div>
+        <!-- v4.12 ADDITION: Geometry & Math Symbol Quick-Insert Bar -->
+        <div class="tool-cluster" role="group" aria-label="Quick Geometry Symbols">
+          <button type="button" data-math-sym="∠" class="subtool-btn" title="Insert Angle symbol">∠</button>
+          <button type="button" data-math-sym="°" class="subtool-btn" title="Insert Degree symbol">°</button>
+          <button type="button" data-math-sym="△" class="subtool-btn" title="Insert Triangle symbol">△</button>
+          <button type="button" data-math-sym="⊥" class="subtool-btn" title="Insert Perpendicular symbol">⊥</button>
+          <button type="button" data-math-sym="∥" class="subtool-btn" title="Insert Parallel symbol">∥</button>
+          <button type="button" data-math-sym="≅" class="subtool-btn" title="Insert Congruent symbol">≅</button>
+          <button type="button" data-math-sym="∼" class="subtool-btn" title="Insert Similar symbol">∼</button>
+          <button type="button" data-math-sym="π" class="subtool-btn" title="Insert Pi">π</button>
+          <button type="button" data-math-sym="√" class="subtool-btn" title="Insert Square Root">√</button>
+          <button type="button" data-math-sym="²" class="subtool-btn" title="Insert Squared">x²</button>
+          <button type="button" data-math-sym="³" class="subtool-btn" title="Insert Cubed">x³</button>
+        </div>
       </div>
 
     </div>
 
-    <!-- Row 3: Collapsible Supabase Realtime Broadcast Sync Bar -->
+    <!-- Row 3: Collapsible Supabase Realtime Broadcast Sync Bar (Hidden by default once configured or toggled) -->
     <div id="syncBarDrawer" class="px-3 py-2 bg-slate-900 text-slate-100 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
       <div class="flex flex-wrap items-center gap-2">
-        <span class="font-semibold text-blue-400">⚡ Supabase Realtime Broadcast:</span>
+        <span class="font-semibold text-blue-400">⚡ Live Room Sync:</span>
         <input
           type="text"
           id="supabaseUrlInput"
           placeholder="Supabase Project URL (https://xyz.supabase.co)"
-          class="px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 w-60 text-xs focus:outline-none focus:border-blue-400"
+          class="px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 w-60 text-xs focus:outline-none focus:border-blue-400"
         />
         <input
           type="password"
           id="supabaseKeyInput"
           placeholder="Supabase anon public key"
-          class="px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 w-52 text-xs focus:outline-none focus:border-blue-400"
+          class="px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-400 w-52 text-xs focus:outline-none focus:border-blue-400"
         />
       </div>
 
@@ -561,39 +749,41 @@ body[data-theme="dark"] #clearConfirmModal p { color: #cbd5e1; }
           id="roomCodeInput"
           placeholder="ROOM CODE"
           maxlength="12"
-          class="px-2.5 py-1 rounded bg-slate-800 border border-slate-700 text-white font-mono uppercase w-28 text-xs focus:outline-none focus:border-blue-400"
+          class="px-2.5 py-1 rounded-md bg-slate-800 border border-slate-700 text-white font-mono uppercase w-28 text-xs focus:outline-none focus:border-blue-400"
         />
-        <button type="button" id="btnCreateRoom" class="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold transition teacher-only">
+        <button type="button" id="btnCreateRoom" class="px-3 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-semibold transition teacher-only">
           Create room
         </button>
-        <button type="button" id="btnJoinRoom" class="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition">
+        <button type="button" id="btnJoinRoom" class="px-3 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition">
           Join room
         </button>
-        <button type="button" id="btnCopyLink" class="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 font-medium transition">
+        <button type="button" id="btnCopyLink" class="px-3 py-1 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-100 font-medium transition">
           🔗 Copy link
         </button>
-        <button type="button" id="btnSaveCloudNow" class="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-semibold transition teacher-only" title="Save the current board to cloud now">
-          ☁ Save to cloud now
+        <button type="button" id="btnSaveCloudNow" class="px-3 py-1 rounded-md bg-amber-600 hover:bg-amber-500 text-white font-semibold transition teacher-only" title="Save the current board to cloud now">
+          ☁ Save now
         </button>
       </div>
-      <div id="cloudStatusLine" class="w-full text-[11px] text-slate-300">Cloud: never saved yet</div>
+      <div id="cloudStatusLine" class="w-full text-[11px] text-slate-400">Cloud: never saved yet</div>
     </div>
   </header>
 
   <!-- v4 layout: left icon-only toolbar + class tabs above the board -->
   <div id="boardShell" class="flex flex-1 overflow-hidden">
     <aside id="leftToolbar" aria-label="Board Tools">
-      <button type="button" data-tab-btn="select" class="icon-btn left-tool-btn teacher-only active" title="Select">↖</button>
-      <button type="button" data-tab-btn="pen" class="icon-btn left-tool-btn teacher-only" title="Pen">✎</button>
-      <button type="button" data-tab-btn="shapes" class="icon-btn left-tool-btn teacher-only" title="Shapes">◇</button>
-      <button type="button" data-tab-btn="frames" class="icon-btn left-tool-btn teacher-only" title="Frames">⊞</button>
-      <button type="button" data-tab-btn="instruments" class="icon-btn left-tool-btn teacher-only" title="Instruments">📐</button>
+      <button type="button" data-tab-btn="select" class="icon-btn left-tool-btn teacher-only active" title="Select & Move (V)">↖</button>
+      <button type="button" data-tab-btn="pen" class="icon-btn left-tool-btn teacher-only" title="Pen, Highlighter, Laser & Eraser (P)">✎</button>
+      <button type="button" data-tab-btn="shapes" class="icon-btn left-tool-btn teacher-only" title="2D Shapes & Lines (S)">◇</button>
+      <button type="button" data-tab-btn="frames" class="icon-btn left-tool-btn teacher-only" title="Frames & Grids (F)">⊞</button>
+      <button type="button" data-tab-btn="instruments" class="icon-btn left-tool-btn teacher-only" title="Geometry Instruments (I)">📐</button>
       <!-- v4.10: 3D shapes — between Instruments and Text box -->
-      <button type="button" data-tab-btn="3d" class="icon-btn left-tool-btn teacher-only" title="3D shapes">🧊</button>
-      <button type="button" data-tab-btn="textbox" class="icon-btn left-tool-btn teacher-only" title="Text box">T</button>
-      <button type="button" id="btnAddImage" class="icon-btn left-tool-btn teacher-only" title="Add images">🖼</button>
-      <!-- v4.1: voice call lives in the left bar directly under Add images, so the
-           in-call stack expands inside the bar instead of taking top-bar space. -->
+      <button type="button" data-tab-btn="3d" class="icon-btn left-tool-btn teacher-only" title="3D Solids & Nets">🧊</button>
+      <button type="button" data-tab-btn="textbox" class="icon-btn left-tool-btn teacher-only" title="Text Box & Symbols (T)">T</button>
+      <button type="button" id="btnAddImage" class="icon-btn left-tool-btn teacher-only" title="Add Images">🖼</button>
+
+      <div class="toolbar-sep"></div>
+
+      <!-- v4.1: voice call lives in the left bar directly under Add images -->
       <div id="voiceStackCol">
         <button type="button" id="btnVoiceCall" class="icon-btn left-tool-btn icon-green" title="Voice call">📞</button>
         <div id="voiceStack" class="flex flex-col gap-1.5" style="display:none">
@@ -602,96 +792,131 @@ body[data-theme="dark"] #clearConfirmModal p { color: #cbd5e1; }
           <button type="button" id="btnVoiceSpeaker" class="icon-btn left-tool-btn" title="Speaker on">🔊</button>
         </div>
       </div>
-      <!-- v4.8: chat lives under the voice call; teacher PIN button under it.
-           Both stay visible for students — chat is how they message the teacher,
-           and the PIN button is how the teacher unlocks a new device. -->
-      <button type="button" id="btnChat" class="icon-btn left-tool-btn" style="position:relative" title="Messages">💬<span id="chatUnreadBadge" class="chat-unread-badge hidden">0</span></button>
+      <!-- v4.8: chat lives under the voice call; teacher PIN button under it. -->
+      <button type="button" id="btnChat" class="icon-btn left-tool-btn" style="position:relative" title="Class Messages">💬<span id="chatUnreadBadge" class="chat-unread-badge hidden">0</span></button>
       <button type="button" id="btnTeacherMode" class="icon-btn left-tool-btn" title="Teacher mode — enter PIN">👨‍🏫</button>
+
       <div style="flex:1"></div>
-      <button type="button" id="btnUndo" class="icon-btn left-tool-btn teacher-only" title="Undo">↩</button>
-      <button type="button" id="btnRedo" class="icon-btn left-tool-btn teacher-only" title="Redo">↪</button>
-      <button type="button" id="btnDeleteToolbar" class="icon-btn left-tool-btn teacher-only opacity-40 pointer-events-none" title="Delete selected">🗑</button>
+
+      <button type="button" id="btnUndo" class="icon-btn left-tool-btn teacher-only" title="Undo (Ctrl/Cmd+Z)">↩</button>
+      <button type="button" id="btnRedo" class="icon-btn left-tool-btn teacher-only" title="Redo (Ctrl/Cmd+Y)">↪</button>
+      <button type="button" id="btnDeleteToolbar" class="icon-btn left-tool-btn teacher-only opacity-40 pointer-events-none" title="Delete selected (Del)">🗑</button>
     </aside>
+
     <div class="flex flex-col flex-1 overflow-hidden">
       <div id="classTabBar" aria-label="Class tabs">
         <span class="text-xs font-semibold text-slate-500 flex-shrink-0">Classes:</span>
         <div id="classTabBarInner" class="flex items-center gap-1.5 flex-wrap"></div>
       </div>
-  <!-- MAIN INFINITE BOARD VIEWPORT -->
-  <main class="relative flex-1 w-full h-full overflow-hidden bg-slate-100">
-    <canvas id="boardCanvas"></canvas>
 
-    <!-- v4.8: class chat — text + pictures over the same live room. No history:
-         messages live only while people are in the room. -->
-    <section id="chatPanel" aria-label="Class messages">
-      <div class="chat-panel-inner flex flex-col h-full rounded-2xl shadow-xl border overflow-hidden" style="width:min(340px, 86vw)">
-        <div class="chat-panel-header flex items-center justify-between px-3 py-2">
-          <span class="text-sm font-bold">Messages</span>
-          <button type="button" id="btnChatClose" class="text-lg leading-none px-2 py-1" title="Close messages">✕</button>
-        </div>
-        <div id="chatList" class="flex-1 overflow-y-auto px-3 py-2 space-y-2"></div>
-        <div class="flex items-center gap-1.5 p-2">
-          <button type="button" id="btnChatAddImage" title="Send a picture">+</button>
-          <input id="chatInput" type="text" placeholder="Message the class…" autocomplete="off" maxlength="500">
-          <button type="button" id="btnChatSend" title="Send">➤</button>
-          <input id="chatImageInput" type="file" accept="image/*" multiple hidden>
-        </div>
-      </div>
-    </section>
+      <!-- MAIN INFINITE BOARD VIEWPORT -->
+      <main class="relative flex-1 w-full h-full overflow-hidden bg-slate-100">
+        <canvas id="boardCanvas"></canvas>
 
-    <!-- v4.8: big-picture view — scroll to zoom, tap outside the picture to close. -->
-    <div id="imageLightbox" class="absolute inset-0 z-50 bg-slate-900/90 items-center justify-center">
-      <img id="lightboxImg" src="" alt="Shared picture">
-      <div class="absolute top-3 right-3 flex gap-2">
-        <button type="button" id="btnLightboxZoomOut" class="lightbox-btn" title="Zoom out">−</button>
-        <button type="button" id="btnLightboxZoomIn" class="lightbox-btn" title="Zoom in">+</button>
-        <button type="button" id="btnLightboxReset" class="lightbox-btn" title="Fit to screen">⟲</button>
-        <button type="button" id="btnLightboxClose" class="lightbox-btn" title="Close">✕</button>
-      </div>
-      <div class="absolute bottom-3 left-1/2 -translate-x-1/2 text-white/80 text-xs">Scroll to zoom · drag to move · tap outside the picture to close</div>
-    </div>
-
-    <!-- v4.8: teacher PIN — first use creates the PIN, later uses unlock with it. -->
-    <div id="teacherPinModal" class="absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-[1px] items-center justify-center p-4">
-      <div class="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-sm w-full p-5">
-        <h2 id="teacherPinTitle" class="text-sm font-bold text-slate-900">Teacher mode</h2>
-        <p id="teacherPinText" class="text-xs text-slate-500 mt-1">Enter the teacher PIN to control the board on this device.</p>
-        <input id="teacherPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN (at least 4 digits)" class="mt-3">
-        <input id="teacherPinConfirm" type="password" inputmode="numeric" autocomplete="off" placeholder="Repeat the PIN" class="mt-2 hidden">
-        <p id="teacherPinError" class="text-xs text-red-600 mt-2 hidden"></p>
-        <div class="flex gap-2 mt-4">
-          <button type="button" id="btnTeacherPinSubmit" class="flex-1 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold">Unlock</button>
-          <button type="button" id="btnTeacherPinCancel" class="px-3 py-2 rounded-lg bg-slate-200 text-slate-700 text-sm font-semibold">Cancel</button>
-        </div>
-      </div>
-    </div>
-
-
-
-    <!-- In-Page Toast Notification -->
-    <div id="toastBanner" class="hidden opacity-0 transition-opacity duration-200 absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 text-white px-4 py-2 rounded-full shadow-lg text-xs font-medium flex items-center gap-2 pointer-events-none">
-      <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-      <span id="toastText">Ready</span>
-    </div>
-
-    <!-- In-Page Clear Drawings Confirmation Modal (Sandbox-Safe, No window.confirm) -->
-    <div id="clearConfirmModal" class="hidden absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-[1px] flex items-center justify-center p-4">
-      <div class="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-sm w-full p-5">
-        <h2 class="text-sm font-bold text-slate-900">Clear all drawings on the board?</h2>
-        <p class="text-xs text-slate-600 mt-1.5 leading-relaxed">
-          This removes freehand strokes, drawn compass circles, shapes, and lines for everyone in the room. Geometry instruments (protractor, ruler, compass), frames, and images stay on the board.
-        </p>
-        <div class="mt-4 flex items-center justify-end gap-2">
-          <button type="button" id="btnConfirmClearNo" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100">
-            Cancel
+        <!-- v4.12: Minimalist Floating Zoom & Frame Jumper HUD Pill (Bottom-Right) -->
+        <div id="floatingZoomHud" aria-label="Zoom and Frame Navigation">
+          <button type="button" id="btnPrevFrame" class="hud-btn" title="Jump to previous frame ([)">‹</button>
+          <span id="hudFrameIndicator" class="px-1 text-[11px] font-semibold text-slate-500 dark:text-slate-400 tabular-nums" title="Current / Total Frames">F1</span>
+          <button type="button" id="btnNextFrame" class="hud-btn" title="Jump to next frame (])">›</button>
+          <div class="hud-sep"></div>
+          <button type="button" id="btnZoomOut" class="hud-btn" title="Zoom out">−</button>
+          <button type="button" id="btnZoomReset" class="hud-btn" title="Reset zoom to 100%">
+            <span id="zoomPercentDisplay">100%</span>
           </button>
-          <button type="button" id="btnConfirmClearYes" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-700">
-            Clear drawings
-          </button>
+          <button type="button" id="btnZoomIn" class="hud-btn" title="Zoom in">+</button>
+          <button type="button" id="btnZoomFit" class="hud-btn" title="Fit board to screen">⊡</button>
         </div>
-      </div>
-    </div>
-  </main>
+
+        <!-- v4.8: class chat — text + pictures over the same live room. -->
+        <section id="chatPanel" aria-label="Class messages">
+          <div class="chat-panel-inner flex flex-col h-full rounded-2xl shadow-xl border overflow-hidden" style="width:min(340px, 86vw)">
+            <div class="chat-panel-header flex items-center justify-between px-3.5 py-2.5">
+              <span class="text-sm font-bold">Class Messages</span>
+              <button type="button" id="btnChatClose" class="text-lg leading-none px-2 py-1 rounded hover:bg-slate-200/50 dark:hover:bg-slate-700/50" title="Close messages">✕</button>
+            </div>
+            <div id="chatList" class="flex-1 overflow-y-auto px-3 py-2.5 space-y-2"></div>
+            <div class="flex items-center gap-1.5 p-2 border-t border-slate-200/60 dark:border-slate-700/60">
+              <button type="button" id="btnChatAddImage" title="Send a picture">+</button>
+              <input id="chatInput" type="text" placeholder="Message the class…" autocomplete="off" maxlength="500">
+              <button type="button" id="btnChatSend" title="Send">➤</button>
+              <input id="chatImageInput" type="file" accept="image/*" multiple hidden>
+            </div>
+          </div>
+        </section>
+
+        <!-- v4.8: big-picture view — scroll to zoom, tap outside the picture to close. -->
+        <div id="imageLightbox" class="absolute inset-0 z-50 bg-slate-900/90 items-center justify-center">
+          <img id="lightboxImg" src="" alt="Shared picture">
+          <div class="absolute top-3 right-3 flex gap-2">
+            <button type="button" id="btnLightboxZoomOut" class="lightbox-btn" title="Zoom out">−</button>
+            <button type="button" id="btnLightboxZoomIn" class="lightbox-btn" title="Zoom in">+</button>
+            <button type="button" id="btnLightboxReset" class="lightbox-btn" title="Fit to screen">⟲</button>
+            <button type="button" id="btnLightboxClose" class="lightbox-btn" title="Close">✕</button>
+          </div>
+          <div class="absolute bottom-3 left-1/2 -translate-x-1/2 text-white/80 text-xs">Scroll to zoom · drag to move · tap outside the picture to close</div>
+        </div>
+
+        <!-- v4.8: teacher PIN — first use creates the PIN, later uses unlock with it. -->
+        <div id="teacherPinModal" class="absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-[2px] items-center justify-center p-4">
+          <div class="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-sm w-full p-5">
+            <h2 id="teacherPinTitle" class="text-sm font-bold text-slate-900">Teacher mode</h2>
+            <p id="teacherPinText" class="text-xs text-slate-500 mt-1">Enter the teacher PIN to control the board on this device.</p>
+            <input id="teacherPinInput" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN (at least 4 digits)" class="mt-3">
+            <input id="teacherPinConfirm" type="password" inputmode="numeric" autocomplete="off" placeholder="Repeat the PIN" class="mt-2 hidden">
+            <p id="teacherPinError" class="text-xs text-red-600 mt-2 hidden"></p>
+            <div class="flex gap-2 mt-4">
+              <button type="button" id="btnTeacherPinSubmit" class="flex-1 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold">Unlock</button>
+              <button type="button" id="btnTeacherPinCancel" class="px-3 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold">Cancel</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- In-Page Toast Notification -->
+        <div id="toastBanner" class="hidden opacity-0 transition-opacity duration-200 absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 text-white px-4 py-2 rounded-full shadow-lg text-xs font-medium flex items-center gap-2 pointer-events-none border border-slate-700/60">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+          <span id="toastText">Ready</span>
+        </div>
+
+        <!-- In-Page Clear Drawings Confirmation Modal -->
+        <div id="clearConfirmModal" class="hidden absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center p-4">
+          <div class="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-sm w-full p-5">
+            <h2 class="text-sm font-bold text-slate-900">Clear all drawings on the board?</h2>
+            <p class="text-xs text-slate-600 mt-1.5 leading-relaxed">
+              This removes freehand strokes, drawn compass circles, shapes, and lines for everyone in the room. Geometry instruments (protractor, ruler, compass), frames, and images stay on the board.
+            </p>
+            <div class="mt-4 flex items-center justify-end gap-2">
+              <button type="button" id="btnConfirmClearNo" class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800">
+                Cancel
+              </button>
+              <button type="button" id="btnConfirmClearYes" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-700">
+                Clear drawings
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- v4.12: Keyboard Shortcuts & Gestures Quick Reference Modal -->
+        <div id="shortcutsModal" class="hidden absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-[2px] flex items-center justify-center p-4">
+          <div class="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-5 text-xs">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="text-sm font-bold text-slate-900">Shortcuts &amp; Classroom Controls</h2>
+              <button type="button" id="btnShortcutsClose" class="text-base leading-none px-2 py-0.5 rounded hover:bg-slate-200/50">✕</button>
+            </div>
+            <div class="grid grid-cols-2 gap-y-2 gap-x-4 text-slate-600 dark:text-slate-300">
+              <div><strong class="text-slate-900 dark:text-white">V / P / S / F / I / T</strong> — Switch tools</div>
+              <div><strong class="text-slate-900 dark:text-white">L / E</strong> — Laser pointer / Eraser</div>
+              <div><strong class="text-slate-900 dark:text-white">Ctrl/Cmd + Z / Y</strong> — Undo / Redo</div>
+              <div><strong class="text-slate-900 dark:text-white">Ctrl/Cmd + D</strong> — Clone selected</div>
+              <div><strong class="text-slate-900 dark:text-white">Right-drag / Space</strong> — Pan board</div>
+              <div><strong class="text-slate-900 dark:text-white">Left-drag (Select)</strong> — Marquee box</div>
+              <div><strong class="text-slate-900 dark:text-white">Right-click Frame</strong> — Lock / Colour</div>
+              <div><strong class="text-slate-900 dark:text-white">Alt + Drag Frame</strong> — Bypass snap</div>
+              <div><strong class="text-slate-900 dark:text-white">[ / ]</strong> — Previous / Next frame</div>
+              <div><strong class="text-slate-900 dark:text-white">Del / Backspace</strong> — Delete item</div>
+            </div>
+          </div>
+        </div>
+      </main>
     </div>
   </div>
 

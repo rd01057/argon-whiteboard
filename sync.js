@@ -1,5 +1,5 @@
 /**
- * sync.js — Real-Time Board Synchronization Layer
+ * sync.js — Real-Time Board Synchronization Layer (Argon v4.12)
  * Uses Supabase Realtime Broadcast (browser-to-browser, no database tables, no server)
  * with automatic URL query parameter room sharing and late-joiner snapshot transfer.
  * Also supports local multi-tab BroadcastChannel sync for instant same-device testing.
@@ -40,6 +40,10 @@
       this.peers = new Set([this.clientId]);
       this.handlers = {};
       this.lastInstrumentBroadcast = 0;
+      // v4.12 FIX: per-event throttle timestamps so simultaneous updates (e.g. compass_draw
+      // sending instrument_update + stroke_update, or move_multi sending frame_update + shape_update)
+      // never starve one another.
+      this.lastBroadcastByType = {};
       // v4.8: teacher/student role for this device. Set from interactive.js
       // (myRole). The packet carries it so every peer can ignore board edits
       // sent by a student device; 'student' is the default (view-only).
@@ -95,6 +99,7 @@
       if (btnToggleSync && syncDrawer) {
         btnToggleSync.addEventListener('click', () => {
           syncDrawer.classList.toggle('hidden');
+          btnToggleSync.classList.toggle('active', !syncDrawer.classList.contains('hidden'));
         });
       }
 
@@ -155,7 +160,24 @@
 
       if (badge) badge.textContent = statusText;
       if (topRoomLabel) {
-        topRoomLabel.textContent = this.roomCode ? ('Room: ' + this.roomCode) : 'Offline / Solo';
+        // v4.12 FIX: preserve #teacherBadge child element inside #activeRoomLabel instead of
+        // wiping it with textContent = ...
+        const teacherBadge = document.getElementById('teacherBadge');
+        const labelText = this.roomCode ? ('Room: ' + this.roomCode) : 'Offline / Solo';
+        if (teacherBadge && topRoomLabel.contains(teacherBadge)) {
+          const firstNode = topRoomLabel.firstChild;
+          if (firstNode && firstNode.nodeType === Node.TEXT_NODE) {
+            firstNode.nodeValue = labelText + ' ';
+          } else {
+            topRoomLabel.insertBefore(document.createTextNode(labelText + ' '), teacherBadge);
+          }
+        } else {
+          topRoomLabel.textContent = labelText;
+          if (teacherBadge) {
+            topRoomLabel.appendChild(document.createTextNode(' '));
+            topRoomLabel.appendChild(teacherBadge);
+          }
+        }
       }
       if (peerBadge) {
         peerBadge.textContent = this.peers.size + (this.peers.size === 1 ? ' device' : ' devices');
@@ -225,8 +247,9 @@
       if (sbUrl && sbKey && window.supabase && typeof window.supabase.createClient === 'function') {
         this.updateStatusUI('Connecting to Supabase...', 'connecting');
         try {
+          // v4.12: eventsPerSecond raised to 45 so chunked image bursts and live pointer/laser streams stay smooth
           this.supabase = window.supabase.createClient(sbUrl, sbKey, {
-            realtime: { params: { eventsPerSecond: 30 } }
+            realtime: { params: { eventsPerSecond: 45 } }
           });
 
           this.channel = this.supabase.channel('geo_room_' + this.roomCode, {
@@ -302,7 +325,9 @@
         'frame_add', 'frame_update',
         'image_add', 'image_update', 'image_meta', 'image_chunk',
         'text_add', 'text_update',
-        'object_delete', 'clear_drawings', 'board_snapshot', 'instrument_update'
+        'object_delete', 'clear_drawings', 'board_snapshot', 'instrument_update',
+        // v4.12 teacher-only classroom broadcast events:
+        'laser_point', 'follow_frame', 'spotlight_update'
       ]);
       if (msg.senderRole === 'student' && BOARD_MUTATION_EVENTS.has(msg.type)) return;
 
@@ -338,7 +363,10 @@
       if (!this.roomCode) return;
       if (throttleMs > 0) {
         const now = performance.now();
-        if (now - this.lastInstrumentBroadcast < throttleMs) return;
+        const key = type + ((data && data.id) ? ('_' + data.id) : '');
+        const last = this.lastBroadcastByType[key] || 0;
+        if (now - last < throttleMs) return;
+        this.lastBroadcastByType[key] = now;
         this.lastInstrumentBroadcast = now;
       }
 

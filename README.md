@@ -1,4 +1,28 @@
-# Geometry Whiteboard — Argon v4.11
+# Geometry Whiteboard — Argon v4.12
+
+## v4.12 — what is new (code review fixes, 60fps smoothness, UI polish & 6 live-teaching additions, built on v4.11)
+1. **Sync & Broadcast reliability fixes (`sync.js` + `interactive.js`)**:
+   - **Per-event broadcast throttling (`sync.js`)**: Replaced the single shared `lastInstrumentBroadcast` timestamp with a per-event-and-ID map (`lastBroadcastByType`) so simultaneous broadcasts (such as `compass_draw` sending `instrument_update` + `stroke_update`, or `move_multi` updating multiple objects at once) never drop or starve each other.
+   - **Preserved Teacher badge in header (`sync.js`)**: `updateStatusUI()` now updates `#activeRoomLabel`'s text node without wiping the nested `#teacherBadge` element when connecting or joining a room.
+   - **Image geometry-only payload on drag release & multi-move (`interactive.js`)**: `endPointerInteraction()` and `move_multi` now use `updatePayloadFor(category, obj)` so releasing a dragged/resized/rotated image (>96 KB data URL) sends lightweight geometry metadata instead of exceeding the 256 KB Supabase Broadcast cap.
+   - **Paced chunked image transfer (`interactive.js`)**: `sendChunked()` now paces outgoing 32 KB chunks at 24 ms intervals (and raises client `eventsPerSecond` to 45) so 600 KB–1 MB photos never trigger WebSocket token-bucket drops.
+   - **Cloud & IndexedDB persistence on all mutations (`interactive.js`)**: `deleteSelectedObject()`, `addFrameToBoard()`, `insertShapeCentered()`, `insertLineCentered()`, `clearDrawingsOnly()`, `addImageObject()`, `drawCompassCircleAction()`, and `stampProtractorRayAction()` now all trigger `scheduleCloudSave()` and `pushHistory()`.
+   - **3D solids included in empty-board guard, Fit-to-Screen, and PDF export (`interactive.js`)**: `hasContent` in `loadCloudBoard()` / `restoreFromLocalBackup()` now checks `board.shapes3d.length`; `fitBoardToScreen()` includes `shapes3d`, `texts`, and `images`; and `drawContentForPdf()` renders 3D shapes and unfolded nets into the exported PDF.
+2. **Smoothness & 60fps Canvas Optimizations**:
+   - **Cached canvas bounding rect**: Eliminated synchronous `canvas.getBoundingClientRect()` layout reflows on every `mousemove` and `wheel` tick by caching the rect and refreshing on `resize`, `ResizeObserver`, and `visualViewport` events.
+   - **Offscreen Protractor dial bitmap cache**: Cached the static protractor semi-circle, 181 degree ticks, and 38 labels onto an offscreen canvas (`getProtractorDialCanvas`), cutting protractor drag/rotate rendering cost by ~90%.
+   - **Wheel-zoom event snapshot**: `handleBoardWheel()` now snapshots wheel event fields (`deltaX`, `deltaY`, `clientX`, `clientY`, `ctrlKey`, `deltaMode`) before queuing in `wheelPending` for the 50 ms timer, preventing stale DOM Event reference issues.
+   - **2-finger pinch undo cleanup — CUT after review (2026-11-07):** Gemini's pinch handler popped the last undo snapshot when a second finger landed, but v4.11 never pushed a duplicate snapshot on pinch, so the pop silently undid the teacher's last action (e.g. after dragging a ruler or compass) and desynced peers. Removed before shipping; pinching now cancels the single-finger action exactly as in v4.11.
+3. **Premium Minimalistic UI (`index.html` / `interactive.html`)**:
+   - Consolidated the duplicate `[data-tab-panel="shapes"]` rows into a single clean contextual sub-bar with segmented `.tool-cluster` groups and a fixed `min-height: 44px` (`#contextSubBar`) so switching tools never causes vertical layout jumps.
+   - Added a compact, translucent bottom-right HUD pill (`#floatingZoomHud`) restoring one-tap Zoom Out (`−`), Zoom `%` Reset (`100%`), Zoom In (`+`), and Fit to Screen (`⊡`), plus quick Prev/Next Frame stepping (`‹ F1/1 ›`).
+4. **6 Modular Live-Teaching Additions (all teacher-gated, zero extra servers/accounts)**:
+   - **Live Laser Pointer (`data-pen-sub="laser"`, shortcut `L`)**: Ephemeral glowing red pointer and fading 1.1 s trail under the Pen tool, streamed live to students without cluttering undo history or cloud saves.
+   - **"Focus Class" / Bring Students Here (`#btnBringStudents`)**: One tap smoothly animates all connected students' viewports to the teacher's current working frame or board view (`follow_frame` broadcast).
+   - **Frame Spotlight / Step-by-Step Reveal Curtain (`#btnToggleSpotlight`)**: Covers the lower portion of the active frame with an opaque shade that the teacher can drag down line-by-line during proofs and derivations (`spotlight_update` broadcast).
+   - **Frame Paper Styles (`data-frame-pattern`)**: Per-frame background pattern selector in the Frames bar — **Grid** (1 cm squares), **Dots** (isometric dot grid for 3D & geometry), **Lined** (ruled notebook lines), and **Blank**.
+   - **Quick Geometry & Math Symbol Bar (`data-math-sym`)**: One-tap insertion of `∠`, `°`, `△`, `⊥`, `∥`, `≅`, `∼`, `π`, `√`, `²`, `³` in the Text Box sub-bar without closing the active text editor.
+   - **Universal Clone / Duplicate (`#btnDuplicateSelected`, `Ctrl/Cmd+D`)**: Clones any selected object or multi-selection (shapes, 3D solids, frames, lines, text boxes, images, strokes) with a clean offset, plus full keyboard shortcuts (`Ctrl/Cmd+Z`, `Ctrl/Cmd+Y`, `Ctrl/Cmd+Shift+Z`, `V/P/S/F/I/T/L/E`, `[` / `]`).
 
 ## v4.11 — what is new (6 items, built on v4.10)
 1. **Select tool: left-drag = select, right-drag = pan** — the v4.10
@@ -65,7 +89,6 @@
    (no slider). Rotate handle spins the shape around its vertical axis;
    corner handles scale it. 3D shapes sync over Broadcast and persist
    through cloud save / snapshots / undo / backup, like 2D shapes.
-   Known limit: the frames-only PDF export does not draw 3D shapes yet.
 
 ## v4.9 — what is new (1 fix, built on v4.8)
 1. **Mouse wheel finally zooms (burst-aware detection)** — v4.8 read one wheel
@@ -85,7 +108,6 @@
 1. **Unlock hold is now 1 second** (was 3 seconds). The shaded left-to-right progress bar fills in 1 s; releasing early, or moving the cursor off the unlock icon, still cancels.
 2. **Select-tool marquee multi-selection** — Select tool: left-click an object selects it; left-drag starting on EMPTY board draws a dashed marquee box and, on release, selects everything whose bounds intersect the box (frames, shapes, lines, strokes, images, text boxes; instruments are never marquee-selectable). Left-drag starting ON an object moves it (or the whole multi-selection, if it is part of one). Left-drag on empty board NEVER pans any more. **Right-button hold + drag pans the board** anywhere, including on locked frames. Space+drag and two-finger drag pan remain as secondary methods. Pen/shape/line/instrument dragging are unchanged.
 3. **Lock / unlock / colour all selected frames at once** — after a marquee covering several frames, right-clicking any selected frame applies the frame menu to the whole selection: Lock locks all of them, Choose colour colours all of them, and (when all selected frames are locked) Hold to unlock unlocks all of them with one 1-second right-button hold. Right-clicking a frame outside the selection affects only that frame. In a multi-move, locked frames stay put while unlocked ones move; if the drag starts on a locked frame, the move is refused with a 'Frame is locked' toast. In multi-delete, locked frames are kept and the rest are deleted. Locked flags and colours sync via frame_update and persist via the existing cloud save (same board_saves table, no new SQL).
-
 
 ## v4.3 — what is new (2 features, built on v4.2)
 1. **Magnetic frame snapping (frames only)** — drag a frame near another
@@ -108,94 +130,10 @@
    "Frame is locked" toast, and remote deletes are refused too), and a
    right-drag starting on it pans the whole board. Drawing/writing inside
    a locked frame still works — only the frame box itself is locked.
-   Right-clicking a locked frame shows ONLY **Hold to unlock** (🔓); no
-   colour change while locked. Unlock requires holding that icon with the
-   **right mouse button for a full 3 seconds**, with a shaded progress bar
-   filling left to right; releasing early cancels and the frame stays
-   locked. The locked flag and the colour live on the frame object, so
-   they sync via frame_update and persist through cloud save (locked
-   frames stay locked after reload). Touch devices have no right-click,
-   so this menu simply does not appear there (long-press is out of scope).
-
-# Geometry Whiteboard — Argon v4
-
-A no-account, room-code whiteboard for teaching geometry live, synced
-browser-to-browser over Supabase Realtime Broadcast (no server, no tables
-needed for live sync). Built from Argon v3; all v3 features are kept.
-
-## v4 — what is new (the confirmed batch, all 10 items)
-1. **No frame titles, no hint text** — the title bar drawn above frames and
-   the bottom-left "Per-device view" hint are removed. Titles therefore do
-   not appear on PDF pages either (intended).
-2. **Trapezium** — new shape alongside rectangle, ellipse/circle, triangle
-   and diamond, with the same rotate and corner/edge resize handles, synced
-   like other shapes, and drawn in the frames-only PDF.
-3. **Cloud save per room + per tab** — board state is saved (debounced) to
-   the teacher's own Supabase project via its REST API, using only the URL
-   + anon key already pasted into the sync bar (never hardcoded, never a
-   service_role key). Run `../supabase-cloud-save.sql` once in that project
-   to create the `board_saves` table (room, tab, state JSONB, updated_at).
-   Without the table, the board fails silently and live Broadcast sync
-   still works. A **New board** button (top bar, with confirm) clears the
-   cloud copy for the current tab so an old board does not return.
-   Images are still compressed to max 1400 px JPEG before saving, as in v3.
-4. **Input remap** — trackpad two-finger drag pans in finger direction;
-   trackpad pinch (Chrome: Ctrl+wheel) zooms in/out; mouse wheel scroll up
-   zooms in, down zooms out; holding the right mouse button and dragging
-   pans (context menu suppressed on the canvas only). Drag-empty-board
-   and Space+drag pan still work. Pen/shape/instrument dragging is untouched.
-5. **Blank start** — a fresh board opens with no ruler, compass or
-   protractor. Instruments are added only by clicking them in the
-   Instruments menu. Saved/cloud boards still load their own instruments.
-   (The single default 16:9 frame is kept, as in v3.)
-6. **Class tabs** — a tab bar above the board, one tab per class, each with
-   its own complete board state (frames, strokes, shapes, images, text,
-   instruments). Create / rename (✎) / close (×) tabs; switching swaps the
-   board; cloud save is per tab. **Live-follow is unsettled in v4: tab
-   switching is per-device — students do NOT auto-follow the teacher's tab
-   switch.** That decision is left for later.
-7. **Left toolbar** — vertical, icon-only, medium icons, no labels, hover
-   names, in this order: Select, Pen, Shapes, Frames, Instruments, Text
-   box, Add images. Lines live under Shapes, not as a separate top-level
-   tool. **Text box (new):** click the board, a box appears, type by
-   keyboard; boxes move/resize/rotate like other objects and sync.
-   **Undo / Redo** sit at the bottom of the left bar, capped at the last
-   20 actions. All icons are original generic symbols (not Miro's artwork);
-   icon buttons are dark blue with a white symbol, except Voice call
-   (green) and Leave voice call (red).
-8. **Top-right export / voice stack** — Export (PDF) sits at the top-right
-   in the voice-call section area, icon-only with a hover name. While in a
-   call, a vertical stack appears under the Voice call button, in order:
-   Leave voice call, Mic on/off, Speaker on/off — all icon-only with hover
-   names.
-9. **Dark / light theme** — a small theme button on the top bar immediately
-   before Room Sync. **First open is always dark theme**; clicking toggles
-   to light, and the choice is remembered per device (localStorage). Dark
-   mode restyles the canvas/grid, toolbars, panels, class tabs, frame
-   backgrounds and near-black ink (rendering-only; stored colours and the
-   PDF keep their original colours).
-10. **Zoom controls removed** — no − / % / + controls at the bottom-right.
-    Zoom remains via pinch, mouse wheel and trackpad.
-
-## v3 features (kept)
-Images (file picker / drag-and-drop / paste, multi-upload, resize, rotate,
-crop; eraser does not erase images; Clear drawings keeps images),
-frames-only PDF (one frame = one page, content only), WebRTC voice call
-for 2–3 peers with mic/speaker toggles, Supabase Broadcast live sync with
-late-joiner snapshot, resizable ruler with edge-snapped line drawing,
-swing-draw compass (partial swing = arc, full swing = circle), resizable
-and flippable protractor, pen / highlighter / eraser.
 
 ## Run it
 Open `index.html` (or `interactive.html` — the two files are identical) in
-a browser, or deploy the whole `geometry-whiteboard/` folder to Netlify
-(existing site's overview-page drop zone; an upload replaces the whole
-site, never merges). Paste your Supabase Project URL + anon key once in
-the sync bar, create or join a room, and share the room link. For cloud
-save, also run `../supabase-cloud-save.sql` in that Supabase project.
-
-## Test it
-See `../TEST-CHECKLIST.md` — it covers every v4 item, the v3 regression
-pass, and the known limits (pinch detection is a browser heuristic; cloud
-restore never overwrites a board that already has content; tab rename
-uses the browser prompt and close uses the browser confirm).
+a browser, or deploy the whole folder to GitHub Pages / Netlify. Paste your
+Supabase Project URL + anon key once in the sync bar, create or join a room,
+and share the room link. For cloud save, also run `../supabase-cloud-save.sql`
+in that Supabase project.

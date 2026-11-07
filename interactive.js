@@ -20,6 +20,8 @@
  *    via right-click (1-second right-hold to unlock, progress bar, locked flag synced).
  * v4.4: unlock hold 1 s (was 3 s); Select-tool marquee multi-selection; left-drag = marquee,
  *    right-drag = pan; right-click on a multi-selection locks/unlocks/colours all its frames.
+ * v4.12: DPR + cached rect smoothness, paced chunked image transfer, protractor/ruler offscreen
+ *    caching, 3D shape PDF export, and 6 modular live-teaching additions.
  */
 (function () {
   'use strict';
@@ -61,6 +63,7 @@
     lineDashed: false,
     framePreset: '16:9', // '9:16' | '16:9' | 'custom'
     frameBg: '#ffffff',
+    framePattern: 'grid', // v4.12: 'grid' | 'dots' | 'lined' | 'blank'
     frameTitle: 'Lesson Frame 1',
     frameCustomW: 600,
     frameCustomH: 450,
@@ -120,8 +123,51 @@
         py: 280,          // pencil Y
         color: '#dc2626'
       }
+    },
+    // v4.12: Spotlight / Reveal Curtain state (synced across peers)
+    spotlight: {
+      enabled: false,
+      frameId: null,
+      revealRatio: 0.35 // 0.0 (all covered) .. 1.0 (fully revealed)
     }
   };
+
+  // v4.12: Cached canvas bounding rect so mousemove/wheel never trigger synchronous layout reflow
+  let cachedCanvasRect = null;
+  function getFastCanvasRect() {
+    if (!cachedCanvasRect || cachedCanvasRect.width === 0) {
+      cachedCanvasRect = canvas.getBoundingClientRect();
+    }
+    return cachedCanvasRect;
+  }
+
+  // v4.12: Live Laser Pointer trails (ephemeral, never saved to undo/cloud)
+  const laserTrails = []; // [{ points: [{x, y, ts}], color }]
+  let activeLaserTrail = null;
+  let laserCleanupRaf = null;
+  function scheduleLaserDecay() {
+    if (laserCleanupRaf) return;
+    const tick = () => {
+      const now = performance.now();
+      let anyLeft = false;
+      for (let i = laserTrails.length - 1; i >= 0; i--) {
+        const tr = laserTrails[i];
+        tr.points = tr.points.filter((p) => now - p.ts < 1100);
+        if (tr.points.length === 0 && tr !== activeLaserTrail) {
+          laserTrails.splice(i, 1);
+        } else if (tr.points.length > 0) {
+          anyLeft = true;
+        }
+      }
+      requestRender();
+      if (anyLeft || activeLaserTrail) {
+        laserCleanupRaf = requestAnimationFrame(tick);
+      } else {
+        laserCleanupRaf = null;
+      }
+    };
+    laserCleanupRaf = requestAnimationFrame(tick);
+  }
 
   // Selection & Active Pointer Interaction State
   let selectedObject = null; // { category: 'frame'|'shape'|'line'|'stroke'|'image'|'instrument', id: string }
@@ -207,7 +253,8 @@
       frames: board.frames, shapes: board.shapes, shapes3d: board.shapes3d || [],
       texts: board.texts || [],
       lines: board.lines, images: board.images, strokes: board.strokes,
-      instruments: board.instruments
+      instruments: board.instruments,
+      spotlight: board.spotlight || { enabled: false, frameId: null, revealRatio: 0.35 }
     }));
   }
   function applyBoardState(st) {
@@ -226,7 +273,10 @@
       if (st.instruments.ruler) Object.assign(board.instruments.ruler, st.instruments.ruler);
       if (st.instruments.compass) Object.assign(board.instruments.compass, st.instruments.compass);
     }
-    selectedObject = null;
+    if (st.spotlight) {
+      board.spotlight = Object.assign({ enabled: false, frameId: null, revealRatio: 0.35 }, st.spotlight);
+    }
+    selectedObject = null; multiActive = false; multiSelection = [];
     suppressHistory = false;
     updateReadouts();
     requestRender();
@@ -325,8 +375,8 @@
       activeClassTabId = tab.id;
       // New tab starts from a fresh blank board (no instruments, default frame kept for teaching).
       const fresh = JSON.parse(JSON.stringify(serializeBoard()));
-      fresh.frames = [{ id: 'frame_default_' + tab.id, type: 'frame', x: 60, y: 40, w: 960, h: 540, bg: '#ffffff', title: 'Frame 1', preset: '16:9' }];
-      fresh.shapes = []; fresh.texts = []; fresh.lines = []; fresh.images = []; fresh.strokes = [];
+      fresh.frames = [{ id: 'frame_default_' + tab.id, type: 'frame', x: 60, y: 40, w: 960, h: 540, bg: '#ffffff', pattern: 'grid', title: 'Frame 1', preset: '16:9' }];
+      fresh.shapes = []; fresh.shapes3d = []; fresh.texts = []; fresh.lines = []; fresh.images = []; fresh.strokes = [];
       fresh.instruments.protractor.visible = false; fresh.instruments.ruler.visible = false; fresh.instruments.compass.visible = false;
       applyBoardState(fresh);
       tab.state = serializeBoard();
@@ -615,6 +665,7 @@
     // Never overwrite a board that already has content (e.g. a live host snapshot just
     // arrived): cloud restore is for an empty tab / a fresh reload, not a live room takeover.
     const hasContent = (board.strokes && board.strokes.length) || (board.shapes && board.shapes.length)
+      || (board.shapes3d && board.shapes3d.length)
       || (board.lines && board.lines.length) || (board.images && board.images.length)
       || (board.texts && board.texts.length)
       || board.instruments.protractor.visible || board.instruments.ruler.visible || board.instruments.compass.visible;
@@ -712,8 +763,10 @@
     loadLocalBackup().then((st) => {
       if (!st) return;
       const hasContent = (board.strokes && board.strokes.length) || (board.shapes && board.shapes.length)
+        || (board.shapes3d && board.shapes3d.length)
         || (board.lines && board.lines.length) || (board.images && board.images.length)
-        || (board.texts && board.texts.length);
+        || (board.texts && board.texts.length)
+        || board.instruments.protractor.visible || board.instruments.ruler.visible || board.instruments.compass.visible;
       if (hasContent) return;
       applyBoardState(st);
       const t = classTabs.find((x) => x.id === activeClassTabId);
@@ -860,16 +913,27 @@
       zoomEl.textContent = Math.round(viewport.zoom * 100) + '%';
     }
 
-    // v4.7: the toolbar Delete button follows the same enable rule as the
-    // header Delete button — enabled only while something is selected.
+    // v4.7/v4.12: the toolbar Delete button and header Delete button enable when
+    // either selectedObject OR multiActive selection is active.
+    const hasSelection = Boolean(selectedObject || (multiActive && multiSelection.length));
     const delBtnToolbar = document.getElementById('btnDeleteToolbar');
     for (const b of [delBtn, delBtnToolbar]) {
       if (!b) continue;
-      if (selectedObject) {
+      if (hasSelection) {
         b.classList.remove('opacity-40', 'pointer-events-none');
       } else {
         b.classList.add('opacity-40', 'pointer-events-none');
       }
+    }
+
+    // v4.12: Clone/Duplicate button in Select bar shows whenever an object (not an instrument) is selected
+    const btnDup = document.getElementById('btnDuplicateSelected');
+    if (btnDup) {
+      const canDup = isTeacher() && (
+        (multiActive && multiSelection.length > 0) ||
+        (selectedObject && selectedObject.category !== 'instrument')
+      );
+      btnDup.classList.toggle('hidden', !canDup);
     }
 
     // v3: Crop button only makes sense for a selected image
@@ -879,6 +943,13 @@
       btnCrop.classList.toggle('hidden', !show);
       btnCrop.textContent = cropMode ? '✂ Cropping… (Esc to cancel)' : '✂ Crop image';
     }
+
+    // v4.12: Update Spotlight button active state & Frame HUD indicator
+    const btnSpot = document.getElementById('btnToggleSpotlight');
+    if (btnSpot) {
+      btnSpot.classList.toggle('active', Boolean(board.spotlight && board.spotlight.enabled));
+    }
+    updateFrameHudIndicator();
 
     // Update instrument toggle pill active states
     const btnToggleProt = document.getElementById('btnToggleProtractor');
@@ -1352,6 +1423,7 @@
   // COMPASS "DRAW CIRCLE" ACTION
   // ---------------------------------------------------------
   function drawCompassCircleAction() {
+    pushHistory(); // v4.12 FIX: make Draw Compass Circle undoable
     const comp = board.instruments.compass;
     const rPx = dist(comp.nx, comp.ny, comp.px, comp.py);
     const rCm = rPx / PX_PER_CM;
@@ -1368,6 +1440,7 @@
     };
     board.strokes.push(circleObj);
     window.BoardSync.send('stroke_add', circleObj);
+    scheduleCloudSave();
     updateReadouts();
     requestRender();
     showToast('Drew circle (' + circleObj.label + ')');
@@ -1375,6 +1448,7 @@
 
   // Stamp Protractor Ray Line Action
   function stampProtractorRayAction() {
+    pushHistory(); // v4.12 FIX: make Stamp Protractor Ray undoable
     const prot = board.instruments.protractor;
     const totalDeg = prot.rotation - prot.rayAngle;
     const rad = totalDeg * DEG_TO_RAD;
@@ -1394,6 +1468,7 @@
     };
     board.lines.push(lineObj);
     window.BoardSync.send('line_add', lineObj);
+    scheduleCloudSave();
     requestRender();
     showToast('Stamped ' + prot.rayAngle.toFixed(1) + '° ray');
   }
@@ -1418,6 +1493,7 @@
     if (!container) return;
     const dpr = window.devicePixelRatio || 1;
     const rect = container.getBoundingClientRect();
+    cachedCanvasRect = canvas.getBoundingClientRect();
     const w = Math.max(1, Math.floor(rect.width * dpr));
     const h = Math.max(1, Math.floor(rect.height * dpr));
     if (canvas.width !== w || canvas.height !== h) {
@@ -1495,6 +1571,12 @@
         drawLineObject(interaction.preview);
       }
     }
+
+    // 8b. Draw Frame Spotlight / Reveal Curtain (v4.12) — above frame content, below instruments
+    drawSpotlightCurtain();
+
+    // 8c. Draw Live Laser Pointer Trails (v4.12)
+    drawLaserTrails();
 
     // 9. Draw Geometry Instruments (Ruler, Protractor, Compass)
     if (board.instruments.ruler.visible) {
@@ -1597,19 +1679,41 @@
     ctx.lineWidth = 1.5;
     ctx.strokeRect(fr.x, fr.y, fr.w, fr.h);
 
-    // Subtle internal grid inside frame
-    ctx.beginPath();
-    ctx.strokeStyle = 'rgba(148, 163, 184, 0.16)';
-    ctx.lineWidth = 1;
-    for (let x = fr.x + PX_PER_CM; x < fr.x + fr.w; x += PX_PER_CM) {
-      ctx.moveTo(x, fr.y);
-      ctx.lineTo(x, fr.y + fr.h);
+    // v4.12: Internal frame paper pattern ('grid' default, 'dots' isometric, 'lined', or 'blank')
+    const pat = fr.pattern || 'grid';
+    if (pat === 'grid') {
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.16)';
+      ctx.lineWidth = 1;
+      for (let x = fr.x + PX_PER_CM; x < fr.x + fr.w; x += PX_PER_CM) {
+        ctx.moveTo(x, fr.y);
+        ctx.lineTo(x, fr.y + fr.h);
+      }
+      for (let y = fr.y + PX_PER_CM; y < fr.y + fr.h; y += PX_PER_CM) {
+        ctx.moveTo(fr.x, y);
+        ctx.lineTo(fr.x + fr.w, y);
+      }
+      ctx.stroke();
+    } else if (pat === 'lined') {
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.24)';
+      ctx.lineWidth = 1;
+      for (let y = fr.y + PX_PER_CM; y < fr.y + fr.h; y += PX_PER_CM) {
+        ctx.moveTo(fr.x, y);
+        ctx.lineTo(fr.x + fr.w, y);
+      }
+      ctx.stroke();
+    } else if (pat === 'dots') {
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.42)';
+      const rowH = PX_PER_CM * 0.8660254; // isometric triangle height
+      let rowIdx = 0;
+      for (let y = fr.y + PX_PER_CM; y < fr.y + fr.h - 4; y += rowH, rowIdx++) {
+        const offsetX = (rowIdx % 2 === 1) ? (PX_PER_CM / 2) : 0;
+        for (let x = fr.x + PX_PER_CM + offsetX; x < fr.x + fr.w - 4; x += PX_PER_CM) {
+          ctx.fillRect(x - 1, y - 1, 2.2, 2.2);
+        }
+      }
     }
-    for (let y = fr.y + PX_PER_CM; y < fr.y + fr.h; y += PX_PER_CM) {
-      ctx.moveTo(fr.x, y);
-      ctx.lineTo(fr.x + fr.w, y);
-    }
-    ctx.stroke();
 
     // v4: frame titles are NOT drawn (removed by request; title field kept in data only).
     // v4.3: locked frames show a small lock badge at the top-left corner.
@@ -1794,14 +1898,15 @@
 
     if (st.kind === 'circle') {
       // Drawn Compass Circle with center dot, dashed radius line, and "r = x cm" label
-      ctx.strokeStyle = st.color || '#dc2626';
+      const cCol = displayColor(st.color || '#dc2626');
+      ctx.strokeStyle = cCol;
       ctx.lineWidth = st.width || 2.5;
       ctx.beginPath();
       ctx.arc(st.cx, st.cy, st.r, 0, Math.PI * 2);
       ctx.stroke();
 
       // Center vertex point
-      ctx.fillStyle = st.color || '#dc2626';
+      ctx.fillStyle = cCol;
       ctx.beginPath();
       ctx.arc(st.cx, st.cy, 3.5, 0, Math.PI * 2);
       ctx.fill();
@@ -1810,7 +1915,7 @@
       ctx.save();
       ctx.setLineDash([5, 4]);
       ctx.lineWidth = 1.3;
-      ctx.strokeStyle = st.color || '#dc2626';
+      ctx.strokeStyle = cCol;
       ctx.beginPath();
       ctx.moveTo(st.cx, st.cy);
       ctx.lineTo(st.cx + st.r, st.cy);
@@ -1823,11 +1928,11 @@
       const tw = ctx.measureText(label).width;
       const lx = st.cx + st.r / 2 - tw / 2 - 5;
       const ly = st.cy - 22;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.fillStyle = currentTheme === 'dark' ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.92)';
       ctx.beginPath();
       ctx.roundRect(lx, ly, tw + 10, 18, 4);
       ctx.fill();
-      ctx.fillStyle = st.color || '#dc2626';
+      ctx.fillStyle = cCol;
       ctx.fillText(label, lx + 5, ly + 13);
 
       ctx.restore();
@@ -1836,7 +1941,8 @@
 
     if (st.kind === 'measure') {
       // Measured segment with ticks at ends and live cm label
-      ctx.strokeStyle = st.color || '#059669';
+      const mCol = displayColor(st.color || '#059669');
+      ctx.strokeStyle = mCol;
       ctx.lineWidth = st.width || 2.5;
       ctx.beginPath();
       ctx.moveTo(st.x1, st.y1);
@@ -1866,7 +1972,7 @@
       ctx.strokeStyle = '#cbd5e1';
       ctx.lineWidth = 1;
       ctx.stroke();
-      ctx.fillStyle = st.color || '#059669';
+      ctx.fillStyle = st.color === '#0f172a' ? '#0f172a' : (st.color || '#059669');
       ctx.fillText(text, mx - tw / 2, my - 8);
       ctx.restore();
       return;
@@ -2001,6 +2107,113 @@
     ctx.restore();
   }
 
+  // v4.12: Offscreen bitmap cache for the static protractor dial (181 degree ticks + 38 labels).
+  // Rebuilds only when radius or DPR changes, cutting protractor render cost by ~90%.
+  let protractorDialCache = { radius: 0, scale: 0, canvas: null, ox: 0, oy: 0 };
+  function getProtractorDialCanvas(R) {
+    const dpr = Math.min(3, (window.devicePixelRatio || 1) * Math.max(1, viewport.zoom));
+    const scale = Math.round(dpr * 2) / 2;
+    if (protractorDialCache.canvas && protractorDialCache.radius === R && protractorDialCache.scale === scale) {
+      return protractorDialCache;
+    }
+    const pad = 28;
+    const w = (R + pad) * 2;
+    const h = R + pad * 2 + 24;
+    const ox = R + pad;
+    const oy = R + pad;
+    const off = document.createElement('canvas');
+    off.width = Math.ceil(w * scale);
+    off.height = Math.ceil(h * scale);
+    const octx = off.getContext('2d');
+    octx.scale(scale, scale);
+    octx.translate(ox, oy);
+
+    // Outer semi-circle + base strip
+    octx.shadowColor = 'rgba(15, 23, 42, 0.16)';
+    octx.shadowBlur = 14;
+    octx.shadowOffsetY = 3;
+    octx.fillStyle = 'rgba(238, 242, 255, 0.88)';
+    octx.strokeStyle = '#4f46e5';
+    octx.lineWidth = 1.6;
+    octx.beginPath();
+    octx.arc(0, 0, R, Math.PI, 0, false);
+    octx.lineTo(R, 20);
+    octx.lineTo(-R, 20);
+    octx.closePath();
+    octx.fill();
+    octx.shadowColor = 'transparent';
+    octx.stroke();
+
+    // Inner cutout window
+    octx.beginPath();
+    octx.arc(0, 0, R * 0.42, Math.PI, 0, false);
+    octx.closePath();
+    octx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+    octx.fill();
+    octx.strokeStyle = 'rgba(79, 70, 229, 0.35)';
+    octx.lineWidth = 1;
+    octx.stroke();
+
+    // Baseline and origin crosshairs
+    octx.beginPath();
+    octx.strokeStyle = '#312e81';
+    octx.lineWidth = 1.4;
+    octx.moveTo(-R + 8, 0);
+    octx.lineTo(R - 8, 0);
+    octx.moveTo(0, -R + 8);
+    octx.lineTo(0, 14);
+    octx.stroke();
+
+    // Origin vertex target
+    octx.fillStyle = '#4f46e5';
+    octx.beginPath();
+    octx.arc(0, 0, 4.5, 0, Math.PI * 2);
+    octx.fill();
+
+    // Batch minor and major degree ticks into two paths instead of 181 stroke() calls
+    octx.textAlign = 'center';
+    octx.textBaseline = 'middle';
+    octx.beginPath();
+    for (let deg = 0; deg <= 180; deg++) {
+      if (deg % 10 === 0) continue;
+      const rad = -deg * DEG_TO_RAD;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      const tickLen = deg % 5 === 0 ? 9 : 5;
+      octx.moveTo(cos * R, sin * R);
+      octx.lineTo(cos * (R - tickLen), sin * (R - tickLen));
+    }
+    octx.strokeStyle = 'rgba(49, 46, 129, 0.65)';
+    octx.lineWidth = 0.8;
+    octx.stroke();
+
+    octx.beginPath();
+    for (let deg = 0; deg <= 180; deg += 10) {
+      const rad = -deg * DEG_TO_RAD;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      octx.moveTo(cos * R, sin * R);
+      octx.lineTo(cos * (R - 14), sin * (R - 14));
+    }
+    octx.strokeStyle = '#1e1b4b';
+    octx.lineWidth = 1.2;
+    octx.stroke();
+
+    for (let deg = 0; deg <= 180; deg += 10) {
+      const rad = -deg * DEG_TO_RAD;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      const rInner = R - 24;
+      octx.font = '600 9px Inter, sans-serif';
+      octx.fillStyle = '#1e40af';
+      octx.fillText(String(deg), cos * rInner, sin * rInner);
+      const rOuter = R - 38;
+      octx.font = '500 8.5px Inter, sans-serif';
+      octx.fillStyle = '#6d28d9';
+      octx.fillText(String(180 - deg), cos * rOuter, sin * rOuter);
+    }
+
+    protractorDialCache = { radius: R, scale: scale, canvas: off, ox: ox, oy: oy, w: w, h: h };
+    return protractorDialCache;
+  }
+
   function drawProtractor(prot) {
     const R = prot.radius; // 210px
 
@@ -2008,86 +2221,10 @@
     ctx.translate(prot.x, prot.y);
     ctx.rotate(prot.rotation * DEG_TO_RAD);
 
-    // Outer semi-circle + base strip
-    ctx.shadowColor = 'rgba(15, 23, 42, 0.16)';
-    ctx.shadowBlur = 14;
-    ctx.shadowOffsetY = 3;
-
-    ctx.fillStyle = 'rgba(238, 242, 255, 0.86)';
-    ctx.strokeStyle = '#4f46e5';
-    ctx.lineWidth = 1.6;
-
-    ctx.beginPath();
-    ctx.arc(0, 0, R, Math.PI, 0, false);
-    ctx.lineTo(R, 20);
-    ctx.lineTo(-R, 20);
-    ctx.closePath();
-    ctx.fill();
-    ctx.shadowColor = 'transparent';
-    ctx.stroke();
-
-    // Inner cutout window for clarity
-    ctx.beginPath();
-    ctx.arc(0, 0, R * 0.42, Math.PI, 0, false);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(79, 70, 229, 0.35)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    // Baseline and origin crosshairs
-    ctx.beginPath();
-    ctx.strokeStyle = '#312e81';
-    ctx.lineWidth = 1.4;
-    ctx.moveTo(-R + 8, 0);
-    ctx.lineTo(R - 8, 0);
-    ctx.moveTo(0, -R + 8);
-    ctx.lineTo(0, 14);
-    ctx.stroke();
-
-    // Origin vertex target
-    ctx.fillStyle = '#4f46e5';
-    ctx.beginPath();
-    ctx.arc(0, 0, 4.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Degree markings in BOTH directions:
-    // Outer scale: 0 -> 180 (left to right clockwise)
-    // Inner scale: 180 -> 0 (right to left counter-clockwise)
+    const dial = getProtractorDialCanvas(R);
+    ctx.drawImage(dial.canvas, -dial.ox, -dial.oy, dial.w, dial.h);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-
-    for (let deg = 0; deg <= 180; deg++) {
-      const rad = -deg * DEG_TO_RAD; // 0 is right (+X), 180 is left (-X)
-      const cos = Math.cos(rad);
-      const sin = Math.sin(rad);
-
-      let tickLen = 5;
-      if (deg % 10 === 0) tickLen = 14;
-      else if (deg % 5 === 0) tickLen = 9;
-
-      ctx.beginPath();
-      ctx.strokeStyle = deg % 10 === 0 ? '#1e1b4b' : 'rgba(49, 46, 129, 0.65)';
-      ctx.lineWidth = deg % 10 === 0 ? 1.2 : 0.8;
-      ctx.moveTo(cos * R, sin * R);
-      ctx.lineTo(cos * (R - tickLen), sin * (R - tickLen));
-      ctx.stroke();
-
-      if (deg % 10 === 0) {
-        // Inner scale (0 at right, 180 at left)
-        const rInner = R - 24;
-        ctx.font = '600 9px Inter, sans-serif';
-        ctx.fillStyle = '#1e40af';
-        ctx.fillText(String(deg), cos * rInner, sin * rInner);
-
-        // Outer scale (0 at left, 180 at right)
-        const rOuter = R - 38;
-        ctx.font = '500 8.5px Inter, sans-serif';
-        ctx.fillStyle = '#6d28d9';
-        ctx.fillText(String(180 - deg), cos * rOuter, sin * rOuter);
-      }
-    }
 
     // Active Angle Ray & Shaded Angle Sector
     const rayRad = -prot.rayAngle * DEG_TO_RAD;
@@ -2398,6 +2535,7 @@
 
   function setFrameLocked(fr, locked, silent) {
     if (!fr) return;
+    if (!silent) pushHistory();
     fr.locked = !!locked;
     syncFrameChange(fr);
     if (!silent) showToast(locked ? 'Frame locked' : 'Frame unlocked');
@@ -2406,6 +2544,7 @@
   function setFrameColour(fr, colour, silent) {
     if (!fr) return;
     if (isFrameLocked(fr)) { if (!silent) showToast('Frame is locked'); return; }
+    if (!silent) pushHistory();
     fr.bg = colour;
     syncFrameChange(fr);
   }
@@ -2640,6 +2779,7 @@
       timeout: setTimeout(() => {
         unlockHold = null;
         if (bar) bar.style.width = '0%';
+        pushHistory();
         for (const f of targets) setFrameLocked(f, false, true);
         showToast(targets.length > 1 ? 'Frames unlocked' : 'Frame unlocked');
         closeFrameMenu();
@@ -2659,6 +2799,7 @@
       // v4.4: locks every frame in the menu targets at once.
       const targets = multiTargetFrames();
       if (targets.length > 1) {
+        pushHistory();
         for (const f of targets) setFrameLocked(f, true, true);
         showToast('Frames locked');
       } else {
@@ -2677,6 +2818,7 @@
         // v4.4: colours every frame in the menu targets at once.
         const targets = multiTargetFrames();
         if (targets.length > 1) {
+          pushHistory();
           for (const f of targets) setFrameColour(f, btn.getAttribute('data-frame-menu-colour'), true);
         } else {
           const fr = menuFrame();
@@ -2718,7 +2860,7 @@
   // POINTER, MOUSE WHEEL & TOUCH INTERACTION
   // ---------------------------------------------------------
   function getCanvasCoords(e) {
-    const rect = canvas.getBoundingClientRect();
+    const rect = getFastCanvasRect();
     return {
       sx: e.clientX - rect.left,
       sy: e.clientY - rect.top
@@ -2765,6 +2907,18 @@
     const world = screenToWorld(sx, sy);
     const wx = world.x;
     const wy = world.y;
+
+    // v4.12: Check if teacher grabbed the Spotlight Curtain handle bar first
+    if (board.spotlight && board.spotlight.enabled && isTeacher()) {
+      const spFr = getSpotlightFrame();
+      if (spFr) {
+        const curY = spFr.y + spFr.h * Math.max(0.05, Math.min(0.98, board.spotlight.revealRatio || 0.35));
+        if (wx >= spFr.x && wx <= spFr.x + spFr.w && Math.abs(wy - curY) <= 18 / viewport.zoom) {
+          interaction = { type: 'spotlight_drag', frame: spFr };
+          return;
+        }
+      }
+    }
 
     // v3: crop mode captures the pointer first — drag a rectangle over the selected image
     if (cropMode) {
@@ -3060,8 +3214,18 @@
     }
 
     if (uiState.activeTab === 'pen') {
-      pushHistory();
       selectedObject = null;
+      // v4.12: Live Laser Pointer — ephemeral glowing trail synced to students, never saved to undo/cloud
+      if (uiState.penSubTool === 'laser') {
+        const pt = { x: Math.round(wx * 10) / 10, y: Math.round(wy * 10) / 10, ts: performance.now() };
+        activeLaserTrail = { color: '#ef4444', points: [pt] };
+        laserTrails.push(activeLaserTrail);
+        interaction = { type: 'laser_draw', trail: activeLaserTrail };
+        window.BoardSync.send('laser_point', { x: pt.x, y: pt.y, start: true });
+        scheduleLaserDecay();
+        return;
+      }
+      pushHistory();
       if (uiState.penSubTool === 'eraser') {
         interaction = { type: 'erase' };
         eraseAtWorldPoint(wx, wy);
@@ -3225,6 +3389,27 @@
     const wx = world.x;
     const wy = world.y;
 
+    if (interaction.type === 'spotlight_drag' && interaction.frame) {
+      const spFr = interaction.frame;
+      const ratio = Math.max(0.05, Math.min(0.98, (wy - spFr.y) / spFr.h));
+      board.spotlight.revealRatio = Number(ratio.toFixed(3));
+      window.BoardSync.send('spotlight_update', board.spotlight, 35);
+      requestRender();
+      return;
+    }
+
+    if (interaction.type === 'laser_draw' && interaction.trail) {
+      const pt = { x: Math.round(wx * 10) / 10, y: Math.round(wy * 10) / 10, ts: performance.now() };
+      const pts = interaction.trail.points;
+      const last = pts[pts.length - 1];
+      if (!last || dist(last.x, last.y, pt.x, pt.y) >= 1.5 / viewport.zoom) {
+        pts.push(pt);
+        window.BoardSync.send('laser_point', { x: pt.x, y: pt.y }, 28);
+        scheduleLaserDecay();
+      }
+      return;
+    }
+
     if (interaction.type === 'pan') {
       if (interaction.rightButton && Math.hypot(sx - interaction.startSx, sy - interaction.startSy) > 6) interaction.moved = true;
       viewport.panX = interaction.origPanX + (sx - interaction.startSx);
@@ -3262,7 +3447,7 @@
           }
         } else { frameSnapGuide = []; }
       }
-      for (const it of interaction.items) window.BoardSync.send(it.category + '_update', it.obj, 40);
+      for (const it of interaction.items) window.BoardSync.send(it.category + '_update', updatePayloadFor(it.category, it.obj), 40);
       requestRender();
       return;
     }
@@ -3619,7 +3804,8 @@
       } else {
         const last = p.points[p.points.length - 1];
         if (dist(last.x, last.y, snapPt.x, snapPt.y) >= 1.5 / viewport.zoom) {
-          p.points.push({ x: snapPt.x, y: snapPt.y });
+          p.points.push({ x: Math.round(snapPt.x * 10) / 10, y: Math.round(snapPt.y * 10) / 10 });
+          window.BoardSync.send('stroke_update', p, 45);
         }
       }
       requestRender();
@@ -3719,8 +3905,14 @@
       window.BoardSync.send('instrument_update', { key: 'protractor', state: board.instruments.protractor });
     } else if (act.type && act.type.startsWith('ruler_')) {
       window.BoardSync.send('instrument_update', { key: 'ruler', state: board.instruments.ruler });
+    } else if (act.type === 'spotlight_drag') {
+      window.BoardSync.send('spotlight_update', board.spotlight);
+    } else if (act.type === 'laser_draw') {
+      activeLaserTrail = null;
+      scheduleLaserDecay();
+      return;
     } else if (act.type === 'move_multi') {
-      for (const it of act.items) window.BoardSync.send(it.category + '_update', it.obj);
+      for (const it of act.items) window.BoardSync.send(it.category + '_update', updatePayloadFor(it.category, it.obj));
     } else if (act.type === 'rotate_shape3d') {
       window.BoardSync.send('shape3d_update', act.obj);
     } else if (act.type === 'move_object' || act.type === 'transform_object') {
@@ -3728,7 +3920,8 @@
         const key = act.obj.id === 'inst_protractor' ? 'protractor' : 'ruler';
         window.BoardSync.send('instrument_update', { key, state: act.obj });
       } else {
-        window.BoardSync.send(act.category + '_update', act.obj);
+        // v4.12 FIX: use updatePayloadFor on release too so moving/resizing a >256KB image never drops the final packet
+        window.BoardSync.send(act.category + '_update', updatePayloadFor(act.category, act.obj));
       }
     } else if (act.type === 'draw_stroke' && act.preview) {
       if (act.preview.kind === 'measure') {
@@ -3814,6 +4007,9 @@
 
     board.frames.forEach((f) => expand(getObjectBounds('frame', f)));
     board.shapes.forEach((s) => expand(getObjectBounds('shape', s)));
+    (board.shapes3d || []).forEach((s3) => expand(getObjectBounds('shape3d', s3)));
+    (board.texts || []).forEach((tx) => expand(getObjectBounds('text', tx)));
+    board.images.forEach((im) => expand(getObjectBounds('image', im)));
     board.lines.forEach((l) => expand(getObjectBounds('line', l)));
     board.strokes.forEach((st) => expand(getObjectBounds('stroke', st)));
     if (board.instruments.protractor.visible) expand(getObjectBounds('instrument', board.instruments.protractor));
@@ -3946,10 +4142,20 @@
       if (Math.abs(e.deltaX) > 3) return 'pan'; // real horizontal motion = trackpad drag
       return null;
     }
+    function snapshotWheelEvent(e) {
+      return {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        deltaMode: e.deltaMode,
+        ctrlKey: e.ctrlKey
+      };
+    }
     function wheelApply(kind, e) {
       // Zoom toward the cursor; clamp the anchor inside the canvas so a
       // wheel over the header/toolbar still zooms sensibly.
-      const rect = canvas.getBoundingClientRect();
+      const rect = getFastCanvasRect();
       const sx = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
       const sy = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
       if (kind === 'zoom') {
@@ -3958,6 +4164,7 @@
       } else {
         viewport.panX -= e.deltaX;
         viewport.panY -= e.deltaY;
+        updateFrameHudIndicator();
         requestRender();
       }
     }
@@ -3970,23 +4177,28 @@
     }
     function handleBoardWheel(e) {
       e.preventDefault(); // v4.9: block the page scroll first, on every tick
+      const snap = snapshotWheelEvent(e);
       const now = performance.now();
-      if (wheelGesture.kind && now - wheelGesture.time < 200) { wheelApply(wheelGesture.kind, e); return; }
-      const clear = wheelClearKind(e);
-      if (clear) { wheelFlushPending(clear); wheelApply(clear, e); return; }
+      if (wheelGesture.kind && now - wheelGesture.time < 200) {
+        wheelGesture.time = now;
+        wheelApply(wheelGesture.kind, snap);
+        return;
+      }
+      const clear = wheelClearKind(snap);
+      if (clear) { wheelFlushPending(clear); wheelApply(clear, snap); return; }
       // Ambiguous: a small fractional tick with no horizontal component.
       const last = wheelPending[wheelPending.length - 1];
-      if (last && Math.abs(e.deltaY - last.deltaY) <= 0.25) {
+      if (last && Math.abs(snap.deltaY - last.deltaY) <= 0.25) {
         wheelRepeat++;
-        if (wheelRepeat >= 3) { wheelFlushPending('zoom'); wheelApply('zoom', e); return; }
-        wheelPending.push(e);
-      } else if (last && wheelPending.length >= 2 && Math.abs(e.deltaY) < 15 &&
+        if (wheelRepeat >= 3) { wheelFlushPending('zoom'); wheelApply('zoom', snap); return; }
+        wheelPending.push(snap);
+      } else if (last && wheelPending.length >= 2 && Math.abs(snap.deltaY) < 15 &&
                  wheelPending.every((ev) => Math.abs(ev.deltaY) < 15)) {
         // Three varying small ticks in a row = a trackpad drag -> pan.
-        wheelFlushPending('pan'); wheelApply('pan', e); return;
+        wheelFlushPending('pan'); wheelApply('pan', snap); return;
       } else {
         wheelRepeat = 1;
-        wheelPending.push(e);
+        wheelPending.push(snap);
       }
       if (wheelPendingTimer) clearTimeout(wheelPendingTimer);
       wheelPendingTimer = setTimeout(() => wheelFlushPending('zoom'), 50);
@@ -4013,7 +4225,8 @@
       }
 
       if (activeTouches.size === 2) {
-        // Cancel single-finger action and switch to 2-finger pinch zoom
+        // Cancel single-finger action and switch to 2-finger pinch zoom.
+        marquee = null;
         interaction = null;
         const pts = Array.from(activeTouches.values());
         pinchState = {
@@ -4084,14 +4297,58 @@
       const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
 
+      // v4.12: Standard Undo / Redo / Duplicate keyboard shortcuts
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'z') {
+          e.preventDefault();
+          if (e.shiftKey) doRedo();
+          else doUndo();
+          return;
+        }
+        if (k === 'y') {
+          e.preventDefault();
+          doRedo();
+          return;
+        }
+        if (k === 'd') {
+          e.preventDefault();
+          duplicateSelectedObjects();
+          return;
+        }
+      }
+
       if (e.code === 'Space') {
         uiState.spacePanning = true;
         canvas.style.cursor = 'grab';
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         deleteSelectedObject();
-      } else if (e.key === 'Escape') {
+      } else if (e.key === '[') {
+        jumpToAdjacentFrame(-1);
+      } else if (e.key === ']') {
+        jumpToAdjacentFrame(1);
+      } else if (e.key === '?') {
+        toggleShortcutsModal();
+      } else if (!e.ctrlKey && !e.metaKey && !e.altKey && isTeacher()) {
+        const k = e.key.toLowerCase();
+        if (k === 'v') switchTab('select');
+        else if (k === 'p') { switchTab('pen'); selectPenSubTool('pen'); }
+        else if (k === 'l') { switchTab('pen'); selectPenSubTool('laser'); }
+        else if (k === 'e') { switchTab('pen'); selectPenSubTool('eraser'); }
+        else if (k === 's') switchTab('shapes');
+        else if (k === 'f') switchTab('frames');
+        else if (k === 'i') switchTab('instruments');
+        else if (k === 't') switchTab('textbox');
+      }
+      if (e.key === 'Escape') {
         closeFrameMenu(); // v4.3
-        if (cropMode) {
+        closeShape3dNetPicker();
+        const scModal = document.getElementById('shortcutsModal');
+        if (scModal) scModal.classList.add('hidden');
+        if (s3dFillColor) {
+          s3dFillColor = null;
+          refreshShape3dControls();
+        } else if (cropMode) {
           // v3: Esc cancels crop mode first, without deselecting the image
           cropMode = null;
           showToast('Crop cancelled');
@@ -4133,16 +4390,26 @@
   // v4.10: the dot follows the thickness — diameter = active stroke width x 2
   // (default penWidth 4 -> 8px dot, as before), capped at 32px. The highlighter
   // uses penWidth x 4.2, measure uses penWidth; the eraser keeps the 8px dot.
+  let cachedPenCursorKey = '';
+  let cachedPenCursorVal = 'crosshair';
   function penDotCursor() {
+    if (uiState.penSubTool === 'laser') {
+      const svgLaser = "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><circle cx='12' cy='12' r='7' fill='rgba(239,68,68,0.35)'/><circle cx='12' cy='12' r='3.5' fill='#ef4444'/></svg>";
+      return 'url("data:image/svg+xml,' + encodeURIComponent(svgLaser) + '") 12 12, crosshair';
+    }
     const color = currentTheme === 'dark' ? '#ffffff' : '#000000';
     let w = uiState.penWidth || 4;
     if (uiState.penSubTool === 'highlighter') w = w * 4.2;
     if (uiState.penSubTool === 'eraser') w = 4;
     const d = Math.max(4, Math.min(32, Math.round(w * 2)));
+    const key = color + '_' + d;
+    if (key === cachedPenCursorKey) return cachedPenCursorVal;
     const size = d + 8;
     const c = size / 2;
     const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='" + size + "' height='" + size + "'><circle cx='" + c + "' cy='" + c + "' r='" + (d / 2) + "' fill='" + color + "'/></svg>";
-    return 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '") ' + c + ' ' + c + ', crosshair';
+    cachedPenCursorKey = key;
+    cachedPenCursorVal = 'url("data:image/svg+xml,' + encodeURIComponent(svg) + '") ' + c + ' ' + c + ', crosshair';
+    return cachedPenCursorVal;
   }
 
   // ---------------------------------------------------------
@@ -5296,6 +5563,7 @@
         window.BoardSync.send('object_delete', { category: it.category, id: it.obj.id });
       }
       multiActive = false; multiSelection = []; selectedObject = null;
+      scheduleCloudSave(); // v4.12 FIX: persist multi-delete to cloud & IndexedDB
       updateReadouts();
       requestRender();
       showToast(locked.length ? ('Removed ' + deletable.length + ' items; locked frames kept') : ('Removed ' + deletable.length + ' items'));
@@ -5336,6 +5604,7 @@
       window.BoardSync.send('object_delete', { category, id });
     }
     selectedObject = null;
+    scheduleCloudSave(); // v4.12 FIX: persist single-object delete to cloud & IndexedDB
     updateReadouts();
     requestRender();
     showToast('Removed selected item');
@@ -5415,6 +5684,7 @@
       w: w,
       h: h,
       bg: uiState.frameBg || '#ffffff',
+      pattern: uiState.framePattern || 'grid',
       title: titleVal,
       preset: label,
       locked: false
@@ -5423,6 +5693,7 @@
     board.frames.push(newFrame);
     selectedObject = { category: 'frame', id: newFrame.id };
     window.BoardSync.send('frame_add', newFrame);
+    scheduleCloudSave(); // v4.12 FIX
     updateReadouts();
     requestRender();
     showToast('Added ' + label + ' frame');
@@ -5449,6 +5720,7 @@
     board.shapes.push(newShape);
     selectedObject = { category: 'shape', id: newShape.id };
     window.BoardSync.send('shape_add', newShape);
+    scheduleCloudSave(); // v4.12 FIX
     updateReadouts();
     requestRender();
   }
@@ -5487,6 +5759,7 @@
       selectedObject = { category: 'line', id: ln.id };
       window.BoardSync.send('line_add', ln);
     }
+    scheduleCloudSave(); // v4.12 FIX
     updateReadouts();
     requestRender();
   }
@@ -5501,7 +5774,9 @@
     if (selectedObject && selectedObject.category !== 'instrument' && selectedObject.category !== 'frame') {
       selectedObject = null;
     }
+    multiActive = false; multiSelection = [];
     window.BoardSync.send('clear_drawings', {});
+    scheduleCloudSave(); // v4.12 FIX
     updateReadouts();
     requestRender();
     showToast('Cleared drawings (instruments & frames kept)');
@@ -5561,11 +5836,16 @@
     if (!val.trim()) {
       board.texts = (board.texts || []).filter((t) => t.id !== obj.id);
       if (selectedObject && selectedObject.id === obj.id) selectedObject = null;
+      window.BoardSync.send('object_delete', { category: 'text', id: obj.id }); // v4.12 FIX: remove emptied text box on peers
     } else {
       obj.text = val;
       const lines = val.split('\n');
-      const longest = Math.max.apply(null, lines.map((l) => l.length));
-      obj.w = Math.max(120, Math.round(longest * (obj.fontSize || 22) * 0.62 + 24));
+      ctx.save();
+      ctx.font = '600 ' + (obj.fontSize || 22) + 'px Inter, sans-serif';
+      let maxW = 0;
+      for (const ln of lines) maxW = Math.max(maxW, ctx.measureText(ln).width);
+      ctx.restore();
+      obj.w = Math.max(120, Math.round(maxW + 24));
       obj.h = Math.max(32, Math.round(lines.length * (obj.fontSize || 22) * 1.35 + 14));
       selectedObject = { category: 'text', id: obj.id };
       window.BoardSync.send('text_add', obj);
@@ -5577,8 +5857,20 @@
   // ---------------------------------------------------------
   // BIND UI CONTROLS & TABS
   // ---------------------------------------------------------
+  function selectPenSubTool(sub) {
+    uiState.penSubTool = sub;
+    document.querySelectorAll('[data-pen-sub]').forEach((b) => {
+      b.classList.toggle('active', b.getAttribute('data-pen-sub') === uiState.penSubTool);
+    });
+    updateCursorStyle();
+  }
+
   function switchTab(tabName) {
     uiState.activeTab = tabName;
+    if (tabName !== 'select' && tabName !== '3d' && s3dFillColor) {
+      s3dFillColor = null;
+      refreshShape3dControls();
+    }
     document.querySelectorAll('[data-tab-btn]').forEach((btn) => {
       btn.classList.toggle('active', btn.getAttribute('data-tab-btn') === tabName);
     });
@@ -5664,10 +5956,7 @@
     // Pen sub-tools
     document.querySelectorAll('[data-pen-sub]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        uiState.penSubTool = btn.getAttribute('data-pen-sub');
-        document.querySelectorAll('[data-pen-sub]').forEach((b) => {
-          b.classList.toggle('active', b.getAttribute('data-pen-sub') === uiState.penSubTool);
-        });
+        selectPenSubTool(btn.getAttribute('data-pen-sub'));
       });
     });
 
@@ -5720,6 +6009,7 @@
         document.querySelectorAll('[data-shape-type]').forEach((b) => {
           b.classList.toggle('active', b.getAttribute('data-shape-type') === uiState.shapeType);
         });
+        document.querySelectorAll('[data-line-type]').forEach((b) => b.classList.remove('active'));
       });
     });
 
@@ -5803,6 +6093,7 @@
         document.querySelectorAll('[data-line-type]').forEach((b) => {
           b.classList.toggle('active', b.getAttribute('data-line-type') === uiState.lineType);
         });
+        document.querySelectorAll('[data-shape-type]').forEach((b) => b.classList.remove('active'));
       });
     });
 
@@ -5996,6 +6287,7 @@
         board.instruments.protractor.visible = !board.instruments.protractor.visible;
         if (board.instruments.protractor.visible) placeInstrumentInWorkingFrame('protractor');
         window.BoardSync.send('instrument_update', { key: 'protractor', state: board.instruments.protractor });
+        scheduleCloudSave();
         updateReadouts();
         requestRender();
       });
@@ -6006,6 +6298,7 @@
         board.instruments.ruler.visible = !board.instruments.ruler.visible;
         if (board.instruments.ruler.visible) placeInstrumentInWorkingFrame('ruler');
         window.BoardSync.send('instrument_update', { key: 'ruler', state: board.instruments.ruler });
+        scheduleCloudSave();
         updateReadouts();
         requestRender();
       });
@@ -6016,6 +6309,7 @@
         board.instruments.compass.visible = !board.instruments.compass.visible;
         if (board.instruments.compass.visible) placeInstrumentInWorkingFrame('compass');
         window.BoardSync.send('instrument_update', { key: 'compass', state: board.instruments.compass });
+        scheduleCloudSave();
         updateReadouts();
         requestRender();
       });
@@ -6100,7 +6394,444 @@
     if (btnZoomFit) {
       btnZoomFit.addEventListener('click', () => fitBoardToScreen());
     }
+
+    // v4.12: Bind new classroom controls (Prev/Next frame, Bring students, Spotlight curtain, Duplicate, Frame patterns, Math symbols, Shortcuts modal)
+    const btnPrevFrame = document.getElementById('btnPrevFrame');
+    const btnNextFrame = document.getElementById('btnNextFrame');
+    if (btnPrevFrame) btnPrevFrame.addEventListener('click', () => jumpToAdjacentFrame(-1));
+    if (btnNextFrame) btnNextFrame.addEventListener('click', () => jumpToAdjacentFrame(1));
+
+    const btnBringStudents = document.getElementById('btnBringStudents');
+    if (btnBringStudents) btnBringStudents.addEventListener('click', () => broadcastBringStudentsHere());
+
+    const btnToggleSpotlight = document.getElementById('btnToggleSpotlight');
+    if (btnToggleSpotlight) btnToggleSpotlight.addEventListener('click', () => toggleSpotlightCurtain());
+
+    const btnDuplicateSelected = document.getElementById('btnDuplicateSelected');
+    if (btnDuplicateSelected) btnDuplicateSelected.addEventListener('click', () => duplicateSelectedObjects());
+
+    const btnShortcutsHelp = document.getElementById('btnShortcutsHelp');
+    const btnShortcutsClose = document.getElementById('btnShortcutsClose');
+    const shortcutsModal = document.getElementById('shortcutsModal');
+    if (btnShortcutsHelp) btnShortcutsHelp.addEventListener('click', () => toggleShortcutsModal());
+    if (btnShortcutsClose && shortcutsModal) btnShortcutsClose.addEventListener('click', () => shortcutsModal.classList.add('hidden'));
+    if (shortcutsModal) shortcutsModal.addEventListener('click', (e) => { if (e.target === shortcutsModal) shortcutsModal.classList.add('hidden'); });
+
+    // v4.12: Frame paper pattern buttons ('grid' | 'dots' | 'lined' | 'blank')
+    document.querySelectorAll('[data-frame-pattern]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const pat = btn.getAttribute('data-frame-pattern') || 'grid';
+        uiState.framePattern = pat;
+        document.querySelectorAll('[data-frame-pattern]').forEach((b) => {
+          b.classList.toggle('active', b.getAttribute('data-frame-pattern') === pat);
+        });
+        if (selectedObject && selectedObject.category === 'frame') {
+          const fr = findObject('frame', selectedObject.id);
+          if (fr && fr.locked) { showToast('Frame is locked'); return; }
+          if (fr) {
+            pushHistory();
+            fr.pattern = pat;
+            syncFrameChange(fr);
+          }
+        }
+      });
+    });
+
+    // v4.12: Quick Geometry & Math Symbol buttons in Text Box bar
+    document.querySelectorAll('[data-math-sym]').forEach((btn) => {
+      btn.addEventListener('mousedown', (e) => {
+        // Prevent blurring an open textEditor when clicking a math symbol button
+        e.preventDefault();
+      });
+      btn.addEventListener('click', () => {
+        const sym = btn.getAttribute('data-math-sym') || '';
+        if (!sym) return;
+        if (textEditor && textEditor.textarea) {
+          const ta = textEditor.textarea;
+          const start = ta.selectionStart || 0;
+          const end = ta.selectionEnd || 0;
+          ta.value = ta.value.slice(0, start) + sym + ta.value.slice(end);
+          ta.selectionStart = ta.selectionEnd = start + sym.length;
+          ta.focus();
+        } else if (selectedObject && selectedObject.category === 'text') {
+          const tx = findObject('text', selectedObject.id);
+          if (tx) {
+            pushHistory();
+            tx.text = (tx.text || '') + sym;
+            window.BoardSync.send('text_update', tx);
+            scheduleCloudSave();
+            requestRender();
+          }
+        } else {
+          const c = viewCentreWorld();
+          openTextEditor(c.x - 80, c.y - 20, null);
+          if (textEditor && textEditor.textarea) {
+            textEditor.textarea.value = sym;
+            textEditor.textarea.selectionStart = textEditor.textarea.selectionEnd = sym.length;
+          }
+        }
+      });
+    });
   }
+  // =========================================================
+  // v4.12 HELPFUL LIVE-TEACHING ADDITIONS (MODULAR & SEPARATE)
+  // =========================================================
+
+  // ADDITION 1: Live Laser Pointer rendering (ephemeral fading red trail)
+  function drawLaserTrails() {
+    if (!laserTrails.length) return;
+    const now = performance.now();
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const tr of laserTrails) {
+      const pts = tr.points;
+      if (!pts || !pts.length) continue;
+      for (let i = 1; i < pts.length; i++) {
+        const age = now - pts[i].ts;
+        const alpha = Math.max(0, 1 - age / 1100);
+        if (alpha <= 0.02) continue;
+        ctx.beginPath();
+        ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+        ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.strokeStyle = 'rgba(239, 68, 68, ' + (alpha * 0.35).toFixed(3) + ')';
+        ctx.lineWidth = (12 * alpha) / viewport.zoom;
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(239, 68, 68, ' + (alpha * 0.95).toFixed(3) + ')';
+        ctx.lineWidth = (3.5 * alpha) / viewport.zoom;
+        ctx.stroke();
+      }
+      const head = pts[pts.length - 1];
+      const headAge = now - head.ts;
+      if (headAge < 250) {
+        ctx.beginPath();
+        ctx.arc(head.x, head.y, 5 / viewport.zoom, 0, Math.PI * 2);
+        ctx.fillStyle = '#ef4444';
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  // ADDITION 2: "Bring Students Here" (Focus Class on Teacher's Current Frame / Viewport)
+  function broadcastBringStudentsHere() {
+    if (!isTeacher()) return;
+    const rect = getFastCanvasRect();
+    const centre = screenToWorld(rect.width / 2, rect.height / 2);
+    // If the teacher is looking inside a frame, send that frame ID so students fit that frame cleanly
+    let targetFrameId = null;
+    for (let i = board.frames.length - 1; i >= 0; i--) {
+      const fr = board.frames[i];
+      if (centre.x >= fr.x && centre.x <= fr.x + fr.w && centre.y >= fr.y && centre.y <= fr.y + fr.h) {
+        targetFrameId = fr.id;
+        break;
+      }
+    }
+    window.BoardSync.send('follow_frame', {
+      frameId: targetFrameId,
+      wx: Math.round(centre.x),
+      wy: Math.round(centre.y),
+      zoom: Number(viewport.zoom.toFixed(3))
+    });
+    showToast(targetFrameId ? 'Focused class on current frame' : 'Focused class on your current view');
+  }
+
+  function animateViewportTo(targetPanX, targetPanY, targetZoom) {
+    const startPanX = viewport.panX;
+    const startPanY = viewport.panY;
+    const startZoom = viewport.zoom;
+    const startTime = performance.now();
+    const dur = 260;
+    const step = (now) => {
+      const t = Math.min(1, (now - startTime) / dur);
+      const ease = 1 - Math.pow(1 - t, 3);
+      viewport.panX = startPanX + (targetPanX - startPanX) * ease;
+      viewport.panY = startPanY + (targetPanY - startPanY) * ease;
+      viewport.zoom = startZoom + (targetZoom - startZoom) * ease;
+      updateReadouts();
+      requestRender();
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  function fitFrameInView(fr) {
+    if (!fr) return;
+    const rect = getFastCanvasRect();
+    const pad = 48;
+    const scaleX = Math.max(100, rect.width - pad * 2) / fr.w;
+    const scaleY = Math.max(100, rect.height - pad * 2) / fr.h;
+    const targetZoom = Math.max(viewport.minZoom, Math.min(1.6, Math.min(scaleX, scaleY)));
+    const targetPanX = (rect.width - fr.w * targetZoom) / 2 - fr.x * targetZoom;
+    const targetPanY = (rect.height - fr.h * targetZoom) / 2 - fr.y * targetZoom;
+    animateViewportTo(targetPanX, targetPanY, targetZoom);
+  }
+
+  // ADDITION 3: Quick Frame Stepper (Prev / Next Frame in bottom-right HUD & [ / ] keys)
+  function getActiveFrameIndex() {
+    if (!board.frames.length) return -1;
+    if (selectedObject && selectedObject.category === 'frame') {
+      const idx = board.frames.findIndex((f) => f.id === selectedObject.id);
+      if (idx >= 0) return idx;
+    }
+    const rect = getFastCanvasRect();
+    const c = screenToWorld(rect.width / 2, rect.height / 2);
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    board.frames.forEach((fr, i) => {
+      const d = dist(c.x, c.y, fr.x + fr.w / 2, fr.y + fr.h / 2);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    });
+    return bestIdx;
+  }
+
+  function updateFrameHudIndicator() {
+    const el = document.getElementById('hudFrameIndicator');
+    if (!el) return;
+    if (!board.frames.length) {
+      el.textContent = '0/0';
+      return;
+    }
+    const idx = getActiveFrameIndex();
+    const fr = board.frames[idx] || board.frames[0];
+    el.textContent = 'F' + (fr.seq || (idx + 1)) + '/' + board.frames.length;
+  }
+
+  function jumpToAdjacentFrame(delta) {
+    if (!board.frames.length) { showToast('No frames on the board'); return; }
+    const cur = getActiveFrameIndex();
+    const nextIdx = (cur + delta + board.frames.length) % board.frames.length;
+    const target = board.frames[nextIdx];
+    if (isTeacher()) selectedObject = { category: 'frame', id: target.id };
+    fitFrameInView(target);
+    showToast('Frame ' + (target.seq || (nextIdx + 1)) + ' of ' + board.frames.length);
+  }
+
+  // ADDITION 4: Frame Spotlight / Step-by-Step Reveal Curtain
+  function getSpotlightFrame() {
+    if (!board.frames.length) return null;
+    if (board.spotlight && board.spotlight.frameId) {
+      const found = board.frames.find((f) => f.id === board.spotlight.frameId);
+      if (found) return found;
+    }
+    const idx = getActiveFrameIndex();
+    return board.frames[idx] || board.frames[0];
+  }
+
+  function toggleSpotlightCurtain() {
+    if (!isTeacher()) return;
+    if (!board.frames.length) { showToast('Add a frame first to use the Spotlight Curtain'); return; }
+    board.spotlight = board.spotlight || { enabled: false, frameId: null, revealRatio: 0.35 };
+    board.spotlight.enabled = !board.spotlight.enabled;
+    if (board.spotlight.enabled) {
+      const fr = getSpotlightFrame();
+      board.spotlight.frameId = fr ? fr.id : board.frames[0].id;
+      if (typeof board.spotlight.revealRatio !== 'number') board.spotlight.revealRatio = 0.35;
+      showToast('Curtain on — drag the blue bar down to reveal steps');
+    } else {
+      showToast('Spotlight curtain off');
+    }
+    window.BoardSync.send('spotlight_update', board.spotlight);
+    scheduleCloudSave();
+    updateReadouts();
+    requestRender();
+  }
+
+  function drawSpotlightCurtain() {
+    if (!board.spotlight || !board.spotlight.enabled) return;
+    const fr = getSpotlightFrame();
+    if (!fr) return;
+    const ratio = Math.max(0.05, Math.min(0.98, board.spotlight.revealRatio || 0.35));
+    const curY = fr.y + fr.h * ratio;
+    const curH = fr.y + fr.h - curY;
+    if (curH <= 1) return;
+
+    ctx.save();
+    ctx.fillStyle = currentTheme === 'dark' ? 'rgba(15, 23, 42, 0.94)' : 'rgba(30, 41, 59, 0.92)';
+    ctx.fillRect(fr.x + 1, curY, fr.w - 2, curH - 1);
+
+    // Draggable top handle bar along the curtain edge
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 3 / viewport.zoom;
+    ctx.beginPath();
+    ctx.moveTo(fr.x + 1, curY);
+    ctx.lineTo(fr.x + fr.w - 1, curY);
+    ctx.stroke();
+
+    if (isTeacher()) {
+      const pillW = 136 / viewport.zoom;
+      const pillH = 22 / viewport.zoom;
+      const px = fr.x + fr.w / 2 - pillW / 2;
+      const py = curY - pillH / 2;
+      ctx.fillStyle = '#2563eb';
+      ctx.beginPath();
+      ctx.roundRect(px, py, pillW, pillH, 11 / viewport.zoom);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '600 ' + (11 / viewport.zoom) + 'px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('↕ Drag to reveal', fr.x + fr.w / 2, curY);
+    }
+    ctx.restore();
+  }
+
+  // ADDITION 5: Universal Clone / Duplicate Selected Object(s) (Ctrl/Cmd+D or button)
+  function duplicateSelectedObjects() {
+    if (!isTeacher()) return;
+    const targets = (multiActive && multiSelection.length > 0)
+      ? multiSelection.slice()
+      : (selectedObject ? [selectedObject] : []);
+    if (!targets.length) { showToast('Select an item first to clone it'); return; }
+    if (targets.length === 1 && targets[0].category === 'shape3d') {
+      const s3 = findObject('shape3d', targets[0].id);
+      if (s3) cloneShape3d(s3);
+      return;
+    }
+    pushHistory();
+    const newSelection = [];
+    const offset = 36;
+    for (const item of targets) {
+      const orig = findObject(item.category, item.id);
+      if (!orig || item.category === 'instrument') continue;
+      const copy = JSON.parse(JSON.stringify(orig));
+      copy.id = uid(item.category);
+      if (item.category === 'frame') {
+        copy.seq = nextFrameSeq();
+        copy.locked = false;
+        copy.x += offset; copy.y += offset;
+        board.frames.push(copy);
+        window.BoardSync.send('frame_add', copy);
+      } else if (item.category === 'shape') {
+        copy.x += offset; copy.y += offset;
+        board.shapes.push(copy);
+        window.BoardSync.send('shape_add', copy);
+      } else if (item.category === 'shape3d') {
+        copy.x += offset; copy.y += offset;
+        board.shapes3d.push(copy);
+        window.BoardSync.send('shape3d_add', copy);
+      } else if (item.category === 'text') {
+        copy.x += offset; copy.y += offset;
+        board.texts.push(copy);
+        window.BoardSync.send('text_add', copy);
+      } else if (item.category === 'image') {
+        copy.x += offset; copy.y += offset;
+        board.images.push(copy);
+        sendImageFull(copy);
+      } else if (item.category === 'line') {
+        copy.x1 += offset; copy.y1 += offset; copy.x2 += offset; copy.y2 += offset;
+        board.lines.push(copy);
+        window.BoardSync.send('line_add', copy);
+      } else if (item.category === 'stroke') {
+        if (copy.kind === 'circle') { copy.cx += offset; copy.cy += offset; }
+        else if (copy.kind === 'measure') { copy.x1 += offset; copy.y1 += offset; copy.x2 += offset; copy.y2 += offset; }
+        else if (copy.points) { copy.points.forEach((p) => { p.x += offset; p.y += offset; }); }
+        board.strokes.push(copy);
+        window.BoardSync.send('stroke_add', copy);
+      }
+      newSelection.push({ category: item.category, id: copy.id });
+    }
+    if (newSelection.length > 1) {
+      multiSelection = newSelection;
+      multiActive = true;
+      selectedObject = newSelection[0];
+    } else if (newSelection.length === 1) {
+      multiActive = false;
+      multiSelection = [];
+      selectedObject = newSelection[0];
+    }
+    scheduleCloudSave();
+    updateReadouts();
+    requestRender();
+    showToast('Cloned ' + newSelection.length + (newSelection.length === 1 ? ' item' : ' items'));
+  }
+
+  // Helper to draw 3D shapes into any 2D context (for Frames-only PDF export)
+  function drawShape3dOnContext(targetCtx, obj) {
+    if (!obj || !obj.kind) return;
+    const prevCtx = ctx;
+    const prevTheme = currentTheme;
+    const prevZoom = viewport.zoom;
+    try {
+      // Render in printable light theme for PDF pages
+      currentTheme = 'light';
+      viewport.zoom = 1;
+      targetCtx.save();
+      targetCtx.translate(obj.x, obj.y);
+      targetCtx.lineWidth = 2;
+      targetCtx.lineJoin = 'round';
+      if (S3D.isBoxKind(obj.kind)) {
+        const dims = S3D.dimsFor(obj.kind, obj.size);
+        const faces = S3D.boxFaces(dims.hl, dims.hh, dims.hw);
+        const net = S3D.netCells(faces, obj.netIndex || 0);
+        const polys = S3D.boxFacePolygons(faces, net, obj.azimuth || 0, obj.openT || 0, obj.elevation || 0);
+        const colors = obj.faceColors || {};
+        const sorted = polys.slice().sort((a, b) => a.depth - b.depth);
+        for (const p of sorted) {
+          if (!p.visible) continue;
+          targetCtx.beginPath();
+          p.pts.forEach((pt, i) => { if (i === 0) targetCtx.moveTo(pt[0], pt[1]); else targetCtx.lineTo(pt[0], pt[1]); });
+          targetCtx.closePath();
+          const fill = colors[p.name];
+          if (fill && !obj.noFill) { targetCtx.fillStyle = fill; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
+          targetCtx.strokeStyle = '#0f172a';
+          targetCtx.stroke();
+        }
+      } else if (obj.kind === 'cylinder') {
+        const g = s3dCylGeom(obj);
+        const colors = obj.faceColors || {};
+        if (colors.side && !obj.noFill) {
+          targetCtx.beginPath();
+          targetCtx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
+          targetCtx.fillStyle = colors.side;
+          targetCtx.globalAlpha = 0.85;
+          targetCtx.fill();
+          targetCtx.globalAlpha = 1;
+        }
+        targetCtx.strokeStyle = '#0f172a';
+        targetCtx.beginPath();
+        targetCtx.moveTo(-g.w / 2, g.topY); targetCtx.lineTo(-g.w / 2, g.botY);
+        targetCtx.moveTo(g.w / 2, g.topY); targetCtx.lineTo(g.w / 2, g.botY);
+        targetCtx.stroke();
+        targetCtx.beginPath();
+        targetCtx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2);
+        if (colors.top && !obj.noFill) { targetCtx.fillStyle = colors.top; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
+        targetCtx.stroke();
+        targetCtx.beginPath();
+        targetCtx.ellipse(0, g.botY, g.eRx, g.eRy, 0, 0, Math.PI * (1 + g.t));
+        targetCtx.stroke();
+      } else if (obj.kind === 'cone') {
+        const g = s3dConeGeom(obj);
+        const RX = g.r * S3D_RX, RY = g.r * S3D_RY;
+        targetCtx.strokeStyle = '#0f172a';
+        targetCtx.beginPath();
+        targetCtx.moveTo(0, -g.h / 2);
+        targetCtx.lineTo(-RX, g.h / 2);
+        targetCtx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI, 0, true);
+        targetCtx.closePath();
+        targetCtx.stroke();
+      } else if (obj.kind === 'sphere' || obj.kind === 'hemisphere') {
+        const r = S3D.dimsFor(obj.kind, obj.size).r;
+        targetCtx.strokeStyle = '#0f172a';
+        targetCtx.beginPath();
+        targetCtx.arc(0, 0, r, obj.kind === 'hemisphere' ? Math.PI : 0, Math.PI * 2);
+        targetCtx.stroke();
+        targetCtx.beginPath();
+        targetCtx.ellipse(0, 0, r, r * 0.35, 0, 0, Math.PI * 2);
+        targetCtx.stroke();
+      }
+      targetCtx.restore();
+    } finally {
+      currentTheme = prevTheme;
+      viewport.zoom = prevZoom;
+    }
+  }
+
+  function toggleShortcutsModal() {
+    const m = document.getElementById('shortcutsModal');
+    if (m) m.classList.toggle('hidden');
+  }
+
 
   // =========================================================
   // v3 FEATURES
@@ -6195,14 +6926,18 @@
   // sender + one receiver factory, shared by board images and chat images.
   // sendChunked returns true when it chunked, false when the payload fits
   // in one direct message (the caller sends that itself).
+  // v4.12 FIX: Pace chunked transfers (25ms between chunks) so a 600KB–1MB photo
+  // (20–32 chunks) never overflows Supabase Realtime's token-bucket rate limiter.
   function sendChunked(metaEvent, chunkEvent, id, meta, src) {
     if (!src || src.length <= IMAGE_DIRECT_LIMIT) return false;
     const transferId = 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     const chunks = splitDataUrlForTransfer(src);
     window.BoardSync.send(metaEvent, Object.assign({}, meta, { id: id, transferId: transferId, totalChunks: chunks.length, totalLength: src.length }));
-    for (let i = 0; i < chunks.length; i++) {
-      window.BoardSync.send(chunkEvent, { id: id, transferId: transferId, index: i, chunk: chunks[i] });
-    }
+    chunks.forEach((chunkStr, i) => {
+      setTimeout(() => {
+        window.BoardSync.send(chunkEvent, { id: id, transferId: transferId, index: i, chunk: chunkStr });
+      }, (i + 1) * 24);
+    });
     return true;
   }
   function registerChunkReceiver(metaEvent, chunkEvent, onMeta, onComplete) {
@@ -6472,6 +7207,7 @@
     board.images.push(im);
     selectedObject = { category: 'image', id: im.id };
     sendImageFull(im); // v4.7: chunked transfer for large photos
+    scheduleCloudSave(); // v4.12 FIX: save added/pasted/dropped image to cloud & IndexedDB
     updateReadouts();
     requestRender();
     return im;
@@ -6696,6 +7432,12 @@
         pctx.fill();
       }
       pctx.restore();
+    }
+    // 3D Shapes (v4.12: draw 3D solids and unfolded nets in frames-only PDF export)
+    for (const s3 of (board.shapes3d || [])) {
+      const b = getObjectBounds('shape3d', s3);
+      if (!isInsideFrame(b, fr)) continue;
+      drawShape3dOnContext(pctx, s3);
     }
     // Images
     for (const im of board.images) {
@@ -7125,6 +7867,9 @@
         if (snap.instruments.ruler) Object.assign(board.instruments.ruler, snap.instruments.ruler);
         if (snap.instruments.compass) Object.assign(board.instruments.compass, snap.instruments.compass);
       }
+      if (snap.spotlight) {
+        board.spotlight = Object.assign({ enabled: false, frameId: null, revealRatio: 0.35 }, snap.spotlight);
+      }
       updateReadouts();
       requestRender();
       showToast('Synced board snapshot from room');
@@ -7349,9 +8094,51 @@
       if (selectedObject && selectedObject.category !== 'instrument' && selectedObject.category !== 'frame') {
         selectedObject = null;
       }
+      multiActive = false; multiSelection = [];
       updateReadouts();
       requestRender();
       showToast('Room drawings cleared');
+    });
+
+    // v4.12: Live Laser Pointer sync receiver
+    let remoteLaserTrail = null;
+    sync.on('laser_point', (pt) => {
+      if (!pt || typeof pt.x !== 'number' || typeof pt.y !== 'number') return;
+      const now = performance.now();
+      if (pt.start || !remoteLaserTrail || !laserTrails.includes(remoteLaserTrail)) {
+        remoteLaserTrail = { color: '#ef4444', points: [{ x: pt.x, y: pt.y, ts: now }] };
+        laserTrails.push(remoteLaserTrail);
+      } else {
+        remoteLaserTrail.points.push({ x: pt.x, y: pt.y, ts: now });
+      }
+      scheduleLaserDecay();
+    });
+
+    // v4.12: Teacher "Bring Students Here" viewport focus receiver
+    sync.on('follow_frame', (info) => {
+      if (!info) return;
+      if (info.frameId) {
+        const fr = board.frames.find((f) => f.id === info.frameId);
+        if (fr) {
+          fitFrameInView(fr);
+          showToast('Teacher focused view on Frame ' + (fr.seq || ''));
+          return;
+        }
+      }
+      if (typeof info.wx === 'number' && typeof info.wy === 'number') {
+        const rect = getFastCanvasRect();
+        const z = Math.max(viewport.minZoom, Math.min(viewport.maxZoom, info.zoom || viewport.zoom));
+        animateViewportTo(rect.width / 2 - info.wx * z, rect.height / 2 - info.wy * z, z);
+        showToast('Teacher synced class view');
+      }
+    });
+
+    // v4.12: Spotlight / Reveal Curtain sync receiver
+    sync.on('spotlight_update', (sp) => {
+      if (!sp) return;
+      board.spotlight = Object.assign({ enabled: false, frameId: null, revealRatio: 0.35 }, sp);
+      updateReadouts();
+      requestRender();
     });
   }
 
