@@ -4966,33 +4966,64 @@
     const dims = S3D.dimsFor('cylinder', obj.size);
     const r = dims.r, h = dims.h;
     const t = S3D.smooth(obj.openT || 0);
+    // v4.14: the bottom circle moves FIRST (video: it is already a full
+    // face-on circle below the sheet at ~25% open, while the top is still
+    // a shallow ellipse). Its travel + flip run on a faster easing so it
+    // is fully out and face-on by ~40% open.
+    const tb = S3D.smooth(Math.min(1, (obj.openT || 0) * 2.5));
     const RX = r * S3D_RX, RY = r * S3D_RY;
     return {
-      r: r, h: h, t: t,
+      r: r, h: h, t: t, tb: tb,
       w: S3D.lerp(RX * 2, Math.PI * 2 * r, t),
       topY: S3D.lerp(-h / 2, -h / 2 - r, t),
-      botY: S3D.lerp(h / 2, h / 2 + r, t),
+      botY: S3D.lerp(h / 2, h / 2 + r, tb),
       eRx: S3D.lerp(RX, r, t),
-      eRy: S3D.lerp(RY, r, t)
+      eRy: S3D.lerp(RY, r, t),
+      eRxB: S3D.lerp(RX, r, tb),
+      eRyB: S3D.lerp(RY, r, tb),
+      // v4.14: front slit — 0 when closed and when fully open (so both
+      // endpoints are identical to before), widest mid-open. The sheet
+      // peels open at the front centre instead of just getting wider.
+      slit: 3 * RX * t * (1 - t)
     };
   }
 
   // Cone geometry at the current openT (shape-local coords, y down on screen).
+  // v4.14 (video: mathmarvels cone net) — a real peel, not a cross-fade:
+  // the apex stays FIXED at the top centre while the cone opens; a slit
+  // opens at the front centre and the surface peels apart symmetrically.
+  // beta is the slit's half-angle around the front: the wedge unrolled is
+  // 2*pi*t of the circumference, flattened into a sector of angle
+  // theta*t. The base circle stays on the centre line, its top always
+  // touching the sector arc's midpoint (apex + s straight down).
   function s3dConeGeom(obj) {
     const dims = S3D.dimsFor('cone', obj.size);
     const r = dims.r, h = dims.h;
     const s = Math.sqrt(r * r + h * h);
     const t = S3D.smooth(obj.openT || 0);
     const net = S3D.coneNet(r, h);
+    const RX = r * S3D_RX, RY = r * S3D_RY;
+    const beta = Math.PI * t;
+    const flipC = t; // base circle flips ellipse -> face-on circle with the unroll
+    const baseRy = S3D.lerp(RY, r, flipC);
+    const baseRx = S3D.lerp(RX, r, flipC);
     return {
       r: r, h: h, s: s, t: t, net: net,
       theta: (Math.PI * 2 * r) / s,
-      apexX: S3D.lerp(0, net.apex.x, t),
-      apexY: S3D.lerp(-h / 2, net.apex.y, t),
-      baseCx: S3D.lerp(0, net.circle.x, t),
-      baseCy: S3D.lerp(h / 2, net.circle.y, t),
-      baseRx: S3D.lerp(r * S3D_RX, r, t),
-      baseRy: S3D.lerp(r * S3D_RY, r, t)
+      apexX: 0, apexY: -h / 2, // fixed — the net grows down from the apex
+      // Base circle: centre sits baseRy below the sector arc's midpoint,
+      // so its top always touches the arc.
+      baseCx: 0,
+      baseCy: -h / 2 + s + baseRy,
+      baseRx: baseRx, baseRy: baseRy,
+      // The circle fades in over the first part of the opening so the
+      // closed cone looks exactly as before (no stray ellipse below it).
+      circleAlpha: Math.min(1, t / 0.15),
+      beta: beta,
+      // Slit rim points on the base ellipse (front centre at beta = 0,
+      // side extremes at beta = 90 deg, meeting at the back at beta = 180).
+      slitL: { x: -RX * Math.sin(beta), y: h / 2 + RY * Math.cos(beta) },
+      slitR: { x: RX * Math.sin(beta), y: h / 2 + RY * Math.cos(beta) }
     };
   }
 
@@ -5011,29 +5042,36 @@
       return [
         { name: 'top', pts: ellipsePoly(0, g.topY, g.eRx, g.eRy, 20) },
         { name: 'side', pts: [[-g.w / 2, g.topY], [g.w / 2, g.topY], [g.w / 2, g.botY], [-g.w / 2, g.botY]] },
-        { name: 'bottom', pts: ellipsePoly(0, g.botY, g.eRx, g.eRy, 20) }
+        { name: 'bottom', pts: ellipsePoly(0, g.botY, g.eRxB, g.eRyB, 20) }
       ];
     }
     if (obj.kind === 'cone') {
       const g = s3dConeGeom(obj);
-      const RX = g.r * S3D_RX;
-      // Side: triangle at t=0, sector fan at t=1 (approximated as a polygon).
-      let sidePts;
-      if (t < 0.02) {
-        sidePts = [[g.apexX, g.apexY], [-RX, g.h / 2], [RX, g.h / 2]];
-      } else {
+      const RX = g.r * S3D_RX, RY = g.r * S3D_RY;
+      // v4.14: side = the remaining-cone triangle (covers the lobes at
+      // every open step) + the sector fan once it has opened.
+      const polys = [
+        { name: 'side', pts: [[g.apexX, g.apexY], [-RX, g.h / 2], [RX, g.h / 2]] }
+      ];
+      if (t >= 0.02) {
         const span = g.theta * t;
         const aMid = Math.PI / 2;
-        sidePts = [[g.apexX, g.apexY]];
+        const fan = [[g.apexX, g.apexY]];
         for (let i = 0; i <= 12; i++) {
           const a = aMid - span / 2 + (span * i) / 12;
-          sidePts.push([g.apexX + Math.cos(a) * g.s, g.apexY + Math.sin(a) * g.s]);
+          fan.push([g.apexX + Math.cos(a) * g.s, g.apexY + Math.sin(a) * g.s]);
         }
+        polys.push({ name: 'side', pts: fan });
       }
-      return [
-        { name: 'side', pts: sidePts },
-        { name: 'base', pts: ellipsePoly(g.baseCx, g.baseCy, g.baseRx, g.baseRy, 20) }
-      ];
+      // Base circle: at the cone base while closed, at its tangent spot
+      // once the slit has opened (same fade as the drawing, so there is
+      // no phantom hit area below a closed cone).
+      const ba = g.circleAlpha;
+      const bcx = 0, bcy = (1 - ba) * (g.h / 2) + ba * g.baseCy;
+      const brx = (1 - ba) * RX + ba * g.baseRx;
+      const bry = (1 - ba) * RY + ba * g.baseRy;
+      polys.push({ name: 'base', pts: ellipsePoly(bcx, bcy, brx, bry, 20) });
+      return polys;
     }
     if (obj.kind === 'sphere') {
       const r = S3D.dimsFor('sphere', obj.size).r;
@@ -5112,12 +5150,18 @@
     // Faces, farthest first.
     const sorted = polys.slice().sort((a, b) => a.depth - b.depth);
     for (const p of sorted) {
-      if (!p.visible) continue;
+      // v4.14: a coloured face keeps its colour when seen from the inside.
+      // Back faces are filled with their colour too — they show through
+      // uncoloured front faces — but they are NOT stroked: their edges are
+      // drawn by the dashed hidden-edge pass below (closed state). Verified
+      // by probe: faces are only back-facing while (nearly) closed; once
+      // the net starts unfolding every face is front-facing.
       ctx.beginPath();
       p.pts.forEach((pt, i) => { if (i === 0) ctx.moveTo(pt[0], pt[1]); else ctx.lineTo(pt[0], pt[1]); });
       ctx.closePath();
       const fill = colors[p.name];
-      if (fill) { ctx.fillStyle = fill; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+      if (fill && !obj.noFill) { ctx.fillStyle = fill; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+      if (!p.visible) continue;
       ctx.strokeStyle = stroke;
       ctx.stroke();
     }
@@ -5181,34 +5225,53 @@
     const g = s3dCylGeom(obj);
     const colors = obj.faceColors || {};
     const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
-    // Lateral surface (fill only; its top/bottom edges are stroked by the ellipses).
-    // The top ellipse is cut out of the fill (evenodd) so the side colour
-    // never shows through the top face.
-    if (colors.side) {
-      ctx.beginPath();
-      ctx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
-      ctx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2, true);
+    // v4.14: the side is two panels split by a front slit (video: the
+    // sheet unrolls from a slit at the front centre into a C-shape, then
+    // flattens). The slit is 0 when closed and when fully open, widest
+    // mid-open. Each panel is clipped to its own rect so the top-ellipse
+    // cutout (evenodd) stays exact — the side colour never shows through
+    // the top face.
+    const halfSlit = g.slit / 2;
+    if (colors.side && !obj.noFill) {
       ctx.fillStyle = colors.side;
       ctx.globalAlpha = 0.85;
-      ctx.fill('evenodd');
+      const panels = [[-g.w / 2, -halfSlit], [halfSlit, g.w / 2]];
+      for (const [x0, x1] of panels) {
+        if (x1 - x0 <= 0) continue;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x0, g.topY, x1 - x0, g.botY - g.topY);
+        ctx.clip();
+        ctx.beginPath();
+        ctx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
+        ctx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2, true);
+        ctx.fill('evenodd');
+        ctx.restore();
+      }
       ctx.globalAlpha = 1;
     }
-    // Sides
+    // Sides + slit edges (the cut edges of the sheet).
     ctx.strokeStyle = stroke;
     ctx.beginPath();
     ctx.moveTo(-g.w / 2, g.topY); ctx.lineTo(-g.w / 2, g.botY);
     ctx.moveTo(g.w / 2, g.topY); ctx.lineTo(g.w / 2, g.botY);
+    if (g.slit > 0.5) {
+      ctx.moveTo(-halfSlit, g.topY); ctx.lineTo(-halfSlit, g.botY);
+      ctx.moveTo(halfSlit, g.topY); ctx.lineTo(halfSlit, g.botY);
+    }
     ctx.stroke();
     // Top ellipse -> circle (moves up to its net spot)
     ctx.beginPath();
     ctx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2);
-    if (colors.top) { ctx.fillStyle = colors.top; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    if (colors.top && !obj.noFill) { ctx.fillStyle = colors.top; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
     ctx.strokeStyle = stroke;
     ctx.stroke();
-    // Bottom: front arc grows into a full circle as it detaches.
+    // v4.14: bottom circle detaches FIRST (video) — it flips to face-on
+    // and travels out on the faster easing, so it is a full circle by
+    // ~40% open instead of a growing arc that only completes at the end.
     ctx.beginPath();
-    ctx.ellipse(0, g.botY, g.eRx, g.eRy, 0, 0, Math.PI * (1 + g.t));
-    if (g.t > 0.9 && colors.bottom) { ctx.fillStyle = colors.bottom; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.ellipse(0, g.botY, g.eRxB, g.eRyB, 0, 0, Math.PI * (1 + g.tb));
+    if (g.tb > 0.95 && colors.bottom && !obj.noFill) { ctx.fillStyle = colors.bottom; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
     ctx.strokeStyle = stroke;
     ctx.stroke();
   }
@@ -5219,41 +5282,86 @@
     const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
     const t = g.t;
     const RX = g.r * S3D_RX, RY = g.r * S3D_RY;
-    // 3D cone (fades out as the net opens)
-    if (t < 1) {
+    const beta = g.beta;
+    const apexX = g.apexX, apexY = g.apexY;
+    const span = g.theta * t;
+    const aMid = Math.PI / 2;
+    // v4.14 (video: mathmarvels cone net) — a real peel, not a cross-fade:
+    // a slit opens at the front centre and the surface peels apart
+    // symmetrically. The remaining surface is one fan: apex, slit edges,
+    // and the long way around the base rim. The sector (the unrolled
+    // surface) grows down from the FIXED apex; the base circle stays on
+    // the centre line, tangent to the sector arc's midpoint.
+    //
+    // 1. Sector fill. The sector is wider than the slit, so its fill is
+    // clipped to (sector XOR fan): the part inside the remaining surface
+    // is left to the fan's fill, so the same colour never double-paints
+    // (0.85 over 0.85 would go visibly darker).
+    if (t > 0.001) {
       ctx.save();
-      ctx.globalAlpha = 1 - t;
       ctx.beginPath();
-      ctx.moveTo(0, -g.h / 2);
-      ctx.lineTo(-RX, g.h / 2);
-      ctx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI, 0, true); // base front arc, left -> right
+      ctx.moveTo(apexX, apexY);
+      ctx.arc(apexX, apexY, g.s, aMid - span / 2, aMid + span / 2);
       ctx.closePath();
-      if (colors.side) { ctx.fillStyle = colors.side; ctx.globalAlpha = (1 - t) * 0.85; ctx.fill(); ctx.globalAlpha = 1 - t; }
-      ctx.strokeStyle = stroke;
-      ctx.stroke();
+      ctx.moveTo(apexX, apexY);
+      ctx.lineTo(g.slitL.x, g.slitL.y);
+      ctx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI / 2 + beta, Math.PI / 2 - beta + Math.PI * 2, false);
+      ctx.lineTo(apexX, apexY);
+      ctx.closePath();
+      ctx.clip('evenodd');
+      ctx.beginPath();
+      ctx.moveTo(apexX, apexY);
+      ctx.arc(apexX, apexY, g.s, aMid - span / 2, aMid + span / 2);
+      ctx.closePath();
+      if (colors.side && !obj.noFill) { ctx.fillStyle = colors.side; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
       ctx.restore();
     }
-    // Net sector (grows + fades in)
-    if (t > 0) {
-      const span = g.theta * t;
-      const aMid = Math.PI / 2;
-      ctx.save();
-      ctx.globalAlpha = t;
-      ctx.beginPath();
-      ctx.moveTo(g.apexX, g.apexY);
-      ctx.arc(g.apexX, g.apexY, g.s, aMid - span / 2, aMid + span / 2);
-      ctx.closePath();
-      if (colors.side) { ctx.fillStyle = colors.side; ctx.globalAlpha = t * 0.85; ctx.fill(); ctx.globalAlpha = t; }
-      ctx.strokeStyle = stroke;
-      ctx.stroke();
-      ctx.restore();
-    }
-    // Base circle (morphs from the base ellipse to its net spot)
+    // 2. Remaining surface (fan) fill.
     ctx.beginPath();
-    ctx.ellipse(g.baseCx, g.baseCy, g.baseRx, g.baseRy, 0, 0, Math.PI * 2);
-    if (colors.base) { ctx.fillStyle = colors.base; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.moveTo(apexX, apexY);
+    ctx.lineTo(g.slitL.x, g.slitL.y);
+    ctx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI / 2 + beta, Math.PI / 2 - beta + Math.PI * 2, false);
+    ctx.lineTo(apexX, apexY);
+    ctx.closePath();
+    if (colors.side && !obj.noFill) { ctx.fillStyle = colors.side; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
+    // 3. Outlines: slant edges (while the slit has not reached the sides),
+    // front rim arc shrinking from the middle out, slit edges.
     ctx.strokeStyle = stroke;
+    ctx.beginPath();
+    if (beta < Math.PI / 2) {
+      ctx.moveTo(apexX, apexY); ctx.lineTo(-RX, g.h / 2);
+      ctx.moveTo(apexX, apexY); ctx.lineTo(RX, g.h / 2);
+      ctx.moveTo(g.slitL.x, g.slitL.y);
+      ctx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI / 2 + beta, Math.PI, false);
+      ctx.moveTo(g.slitR.x, g.slitR.y);
+      ctx.ellipse(0, g.h / 2, RX, RY, 0, 0, Math.PI / 2 - beta, false);
+    }
+    if (t > 0.02 && t < 0.99) {
+      ctx.moveTo(apexX, apexY); ctx.lineTo(g.slitL.x, g.slitL.y);
+      ctx.moveTo(apexX, apexY); ctx.lineTo(g.slitR.x, g.slitR.y);
+    }
     ctx.stroke();
+    // 4. Sector outline: radii (continuing the slit edges down) + arc.
+    if (t > 0.001) {
+      ctx.beginPath();
+      ctx.moveTo(apexX, apexY);
+      ctx.arc(apexX, apexY, g.s, aMid - span / 2, aMid + span / 2);
+      ctx.closePath();
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+    }
+    // 5. Base circle — tangent to the sector arc's midpoint at every step,
+    // fading in as the slit opens so the closed cone looks as before.
+    if (g.circleAlpha > 0) {
+      ctx.save();
+      ctx.globalAlpha = g.circleAlpha;
+      ctx.beginPath();
+      ctx.ellipse(g.baseCx, g.baseCy, g.baseRx, g.baseRy, 0, 0, Math.PI * 2);
+      if (colors.base && !obj.noFill) { ctx.fillStyle = colors.base; ctx.globalAlpha = g.circleAlpha * 0.85; ctx.fill(); ctx.globalAlpha = g.circleAlpha; }
+      ctx.strokeStyle = stroke;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   function drawShape3dSphere(obj) {
@@ -6928,48 +7036,134 @@
         const colors = obj.faceColors || {};
         const sorted = polys.slice().sort((a, b) => a.depth - b.depth);
         for (const p of sorted) {
-          if (!p.visible) continue;
+          // v4.14: back faces are filled with their colour too (same rule
+          // as the on-screen draw — a coloured face keeps its colour when
+          // seen from the inside). Not stroked; the PDF has no dashed
+          // hidden-edge pass, so a back face's outline comes from the
+          // front faces drawn over it.
           targetCtx.beginPath();
           p.pts.forEach((pt, i) => { if (i === 0) targetCtx.moveTo(pt[0], pt[1]); else targetCtx.lineTo(pt[0], pt[1]); });
           targetCtx.closePath();
           const fill = colors[p.name];
           if (fill && !obj.noFill) { targetCtx.fillStyle = fill; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
+          if (!p.visible) continue;
           targetCtx.strokeStyle = '#0f172a';
           targetCtx.stroke();
         }
       } else if (obj.kind === 'cylinder') {
         const g = s3dCylGeom(obj);
         const colors = obj.faceColors || {};
+        // v4.14: same two-panel front-slit side as the on-screen draw.
+        const halfSlit = g.slit / 2;
         if (colors.side && !obj.noFill) {
-          targetCtx.beginPath();
-          targetCtx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
           targetCtx.fillStyle = colors.side;
           targetCtx.globalAlpha = 0.85;
-          targetCtx.fill();
+          const panels = [[-g.w / 2, -halfSlit], [halfSlit, g.w / 2]];
+          for (const [x0, x1] of panels) {
+            if (x1 - x0 <= 0) continue;
+            targetCtx.save();
+            targetCtx.beginPath();
+            targetCtx.rect(x0, g.topY, x1 - x0, g.botY - g.topY);
+            targetCtx.clip();
+            targetCtx.beginPath();
+            targetCtx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
+            targetCtx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2, true);
+            targetCtx.fill('evenodd');
+            targetCtx.restore();
+          }
           targetCtx.globalAlpha = 1;
         }
         targetCtx.strokeStyle = '#0f172a';
         targetCtx.beginPath();
         targetCtx.moveTo(-g.w / 2, g.topY); targetCtx.lineTo(-g.w / 2, g.botY);
         targetCtx.moveTo(g.w / 2, g.topY); targetCtx.lineTo(g.w / 2, g.botY);
+        if (g.slit > 0.5) {
+          targetCtx.moveTo(-halfSlit, g.topY); targetCtx.lineTo(-halfSlit, g.botY);
+          targetCtx.moveTo(halfSlit, g.topY); targetCtx.lineTo(halfSlit, g.botY);
+        }
         targetCtx.stroke();
         targetCtx.beginPath();
         targetCtx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2);
         if (colors.top && !obj.noFill) { targetCtx.fillStyle = colors.top; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
         targetCtx.stroke();
         targetCtx.beginPath();
-        targetCtx.ellipse(0, g.botY, g.eRx, g.eRy, 0, 0, Math.PI * (1 + g.t));
+        targetCtx.ellipse(0, g.botY, g.eRxB, g.eRyB, 0, 0, Math.PI * (1 + g.tb));
+        if (g.tb > 0.95 && colors.bottom && !obj.noFill) { targetCtx.fillStyle = colors.bottom; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
         targetCtx.stroke();
       } else if (obj.kind === 'cone') {
+        // v4.14: full mirror of the on-screen peel (fixed apex, slit fan,
+        // sector, tangent base circle) — the PDF used to draw only the
+        // closed outline and ignored the opening and the colours.
         const g = s3dConeGeom(obj);
+        const colors = obj.faceColors || {};
         const RX = g.r * S3D_RX, RY = g.r * S3D_RY;
+        const beta = g.beta;
+        const apexX = g.apexX, apexY = g.apexY;
+        const span = g.theta * g.t;
+        const aMid = Math.PI / 2;
+        const fillSide = colors.side && !obj.noFill;
+        // 1. Sector fill, clipped to (sector XOR fan).
+        if (g.t > 0.001) {
+          targetCtx.save();
+          targetCtx.beginPath();
+          targetCtx.moveTo(apexX, apexY);
+          targetCtx.arc(apexX, apexY, g.s, aMid - span / 2, aMid + span / 2);
+          targetCtx.closePath();
+          targetCtx.moveTo(apexX, apexY);
+          targetCtx.lineTo(g.slitL.x, g.slitL.y);
+          targetCtx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI / 2 + beta, Math.PI / 2 - beta + Math.PI * 2, false);
+          targetCtx.lineTo(apexX, apexY);
+          targetCtx.closePath();
+          targetCtx.clip('evenodd');
+          targetCtx.beginPath();
+          targetCtx.moveTo(apexX, apexY);
+          targetCtx.arc(apexX, apexY, g.s, aMid - span / 2, aMid + span / 2);
+          targetCtx.closePath();
+          if (fillSide) { targetCtx.fillStyle = colors.side; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
+          targetCtx.restore();
+        }
+        // 2. Remaining surface (fan) fill.
+        targetCtx.beginPath();
+        targetCtx.moveTo(apexX, apexY);
+        targetCtx.lineTo(g.slitL.x, g.slitL.y);
+        targetCtx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI / 2 + beta, Math.PI / 2 - beta + Math.PI * 2, false);
+        targetCtx.lineTo(apexX, apexY);
+        targetCtx.closePath();
+        if (fillSide) { targetCtx.fillStyle = colors.side; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
+        // 3. Outlines.
         targetCtx.strokeStyle = '#0f172a';
         targetCtx.beginPath();
-        targetCtx.moveTo(0, -g.h / 2);
-        targetCtx.lineTo(-RX, g.h / 2);
-        targetCtx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI, 0, true);
-        targetCtx.closePath();
+        if (beta < Math.PI / 2) {
+          targetCtx.moveTo(apexX, apexY); targetCtx.lineTo(-RX, g.h / 2);
+          targetCtx.moveTo(apexX, apexY); targetCtx.lineTo(RX, g.h / 2);
+          targetCtx.moveTo(g.slitL.x, g.slitL.y);
+          targetCtx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI / 2 + beta, Math.PI, false);
+          targetCtx.moveTo(g.slitR.x, g.slitR.y);
+          targetCtx.ellipse(0, g.h / 2, RX, RY, 0, 0, Math.PI / 2 - beta, false);
+        }
+        if (g.t > 0.02 && g.t < 0.99) {
+          targetCtx.moveTo(apexX, apexY); targetCtx.lineTo(g.slitL.x, g.slitL.y);
+          targetCtx.moveTo(apexX, apexY); targetCtx.lineTo(g.slitR.x, g.slitR.y);
+        }
         targetCtx.stroke();
+        // 4. Sector outline.
+        if (g.t > 0.001) {
+          targetCtx.beginPath();
+          targetCtx.moveTo(apexX, apexY);
+          targetCtx.arc(apexX, apexY, g.s, aMid - span / 2, aMid + span / 2);
+          targetCtx.closePath();
+          targetCtx.stroke();
+        }
+        // 5. Base circle.
+        if (g.circleAlpha > 0) {
+          targetCtx.save();
+          targetCtx.globalAlpha = g.circleAlpha;
+          targetCtx.beginPath();
+          targetCtx.ellipse(g.baseCx, g.baseCy, g.baseRx, g.baseRy, 0, 0, Math.PI * 2);
+          if (colors.base && !obj.noFill) { targetCtx.fillStyle = colors.base; targetCtx.globalAlpha = g.circleAlpha * 0.85; targetCtx.fill(); targetCtx.globalAlpha = g.circleAlpha; }
+          targetCtx.stroke();
+          targetCtx.restore();
+        }
       } else if (obj.kind === 'sphere' || obj.kind === 'hemisphere') {
         const r = S3D.dimsFor(obj.kind, obj.size).r;
         targetCtx.strokeStyle = '#0f172a';

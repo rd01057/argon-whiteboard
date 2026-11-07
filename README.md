@@ -1,4 +1,8 @@
-# Geometry Whiteboard — Argon v4.13
+# Geometry Whiteboard — Argon v4.14
+
+## v4.14 — what is new (2 fixes from device testing, built on v4.13)
+1. **Coloured 3D faces keep their colour from the inside** — box shapes (cube, cuboid, both prisms) used to skip back-facing faces entirely, so a coloured face went blank as soon as it rotated to the far side. Back faces are now filled with the same colour (not stroked — their edges stay dashed, as before). Same fix in the PDF export.
+2. **Cone & cylinder opening matches the reference video** (mathmarvels "Net of a Cone and Cylinder") — a real peel instead of a cross-fade / widening rectangle: a slit opens at the front centre and the surface peels apart symmetrically; the cone's apex stays fixed and its base circle stays tangent to the sector arc at every step; the cylinder's bottom circle detaches first and is a full face-on circle by ~40% open. The finished flat nets are unchanged (they already matched the video). The PDF now draws the open cone/cylinder the same way instead of only the closed outline.
 
 ## v4.13 — what is new (3 fixes from device testing, built on v4.12)
 1. **Shapes land inside the working frame** — 3D shapes, 2D shapes and lines now drop at the centre of the frame being worked on (same rule as the v4.11 instruments), instead of the centre of the screen. With no frame under the view centre they still land at the view centre.
