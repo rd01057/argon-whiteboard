@@ -50,7 +50,7 @@
     textSize: 22,
     penSubTool: 'pen',   // 'pen' | 'highlighter' | 'eraser' | 'measure'
     penColor: '#0f172a',
-    penWidth: 4,
+    penWidth: 2,
     shapeType: 'rect',   // 'rect' | 'ellipse' | 'triangle' | 'diamond' | 'trapezium'
     shapeFill: '#dbeafe',
     shapeNoFill: false,
@@ -422,30 +422,151 @@
     return { url, key, room };
   }
   // ---------------------------------------------------------
-  // v4.8: TEACHER / STUDENT ROLES. Default is student (view-only);
-  // the teacher unlocks with a PIN (once per device, remembered in
-  // localStorage). The PIN is a classroom lock, not security — it is
-  // stored as a hash on the device and never sent anywhere.
+  // v4.17: TEACHER / STUDENT ROLES. Default is student (view-only).
+  // The teacher unlocks with ONE password per ROOM (not per device):
+  // the password is set once, stored in the cloud for the room as a
+  // salted PBKDF2 hash (table room_pins, written only through the
+  // set_teacher_pin RPC — see supabase-room-pins.sql), and every device
+  // must match it. v4.8's per-device PIN was the hole: on a phone with
+  // no PIN stored, whatever a student typed twice BECAME the teacher
+  // PIN. That "set" branch no longer exists on a device — a room with
+  // a password can only be unlocked with it.
+  // Honest limit: this is still a browser-side lock, not accounts —
+  // it stops the real exploit (typing a random password), not a
+  // student who opens DevTools and flips a flag by hand.
   // ---------------------------------------------------------
   let myRole = 'student';
-  const TEACHER_PIN_KEY = 'geo_wb_teacher_pin';
   const TEACHER_FLAG_KEY = 'geo_wb_teacher';
-  let teacherPinAttempts = 0;
-  let teacherPinLockedUntil = 0;
+  const TEACHER_PIN_KEY = 'geo_wb_teacher_pin'; // v4.8 legacy — deleted on first v4.17 run (migration below)
+  const TEACHER_PIN_MIGRATED_KEY = 'geo_wb_pin_migrated_v417';
+  const ROOM_PIN_CACHE_PREFIX = 'geo_wb_room_pin_';
+  const ROOM_PIN_LOCK_PREFIX = 'geo_wb_pin_lock_';
+  const PIN_ITERATIONS = 100000;
+  const PIN_MIN_LEN = 6;
+  const PIN_MAX_LEN = 20;
+  // Wrong-password lockout, persisted per room so a reload cannot reset
+  // it: 5 wrong tries locks for 1 min, then 5 min, then 15 min.
+  const PIN_LOCK_STEPS = [60000, 300000, 900000];
+  let teacherPinMode = 'unlock'; // 'unlock' | 'set' | 'change'
+  let teacherPinRoom = '';
+  let teacherPinRecord = null; // { hash, salt, iterations } for the room
 
-  function teacherPinHash(pin) {
-    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
-    for (let i = 0; i < pin.length; i++) {
-      const ch = pin.charCodeAt(i);
-      h1 = Math.imul(h1 ^ ch, 2654435761);
-      h2 = Math.imul(h2 ^ ch, 1597334677);
-    }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16);
+  function pinCryptoAvailable() {
+    try {
+      return !!(window.crypto && window.crypto.subtle &&
+        typeof window.crypto.subtle.importKey === 'function' &&
+        typeof window.crypto.getRandomValues === 'function');
+    } catch (e) { return false; }
   }
-  function storedTeacherPinHash() {
-    try { return window.localStorage.getItem(TEACHER_PIN_KEY) || ''; } catch (e) { return ''; }
+  function hexFromBytes(buf) {
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  function bytesFromHex(hex) {
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }
+  // PBKDF2-SHA256, 100k iterations — slow on purpose, so the stored hash
+  // is useless for guessing even though anyone with the anon key can read it.
+  async function deriveTeacherPinHash(password, saltHex, iterations) {
+    const enc = new TextEncoder();
+    const key = await window.crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
+    const bits = await window.crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt: bytesFromHex(saltHex), iterations: iterations, hash: 'SHA-256' }, key, 256);
+    return hexFromBytes(bits);
+  }
+  function newPinSalt() {
+    const salt = new Uint8Array(16);
+    window.crypto.getRandomValues(salt);
+    return hexFromBytes(salt);
+  }
+  function roomPinCacheKey(room) { return ROOM_PIN_CACHE_PREFIX + room; }
+  function readRoomPinCache(room) {
+    try {
+      const raw = window.localStorage.getItem(roomPinCacheKey(room));
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function writeRoomPinCache(room, rec) {
+    try { window.localStorage.setItem(roomPinCacheKey(room), JSON.stringify(rec)); } catch (e) {}
+  }
+  // Fetch the room's password record from the cloud (falls back to the
+  // cached copy when offline). Returns the record, null (no password set
+  // for this room yet), or 'unavailable' (no connection and no cache).
+  async function fetchRoomPin(room) {
+    const cached = readRoomPinCache(room);
+    const sb = window.BoardSync && window.BoardSync.supabase;
+    if (!sb) return cached || 'unavailable';
+    try {
+      const res = await sb.from('room_pins').select('pin_hash, salt, iterations').eq('room', room).maybeSingle();
+      if (res.error || !res.data) return res.error ? (cached || 'unavailable') : null;
+      const rec = { hash: res.data.pin_hash, salt: res.data.salt, iterations: res.data.iterations || PIN_ITERATIONS };
+      writeRoomPinCache(room, rec);
+      return rec;
+    } catch (e) { return cached || 'unavailable'; }
+  }
+  // Save a password record through the RPC (the only writer). Returns
+  // {ok:true} or {ok:false, reason:'denied'|'setup'|'offline'|'error'}.
+  // 'denied' = the room already has a password and the current one did
+  // not match; 'setup' = the SQL (supabase-room-pins.sql) has not been
+  // run yet, so the function does not exist.
+  async function saveRoomPin(room, rec, currentHash) {
+    const sb = window.BoardSync && window.BoardSync.supabase;
+    if (!sb) return { ok: false, reason: 'offline' };
+    try {
+      const res = await sb.rpc('set_teacher_pin', {
+        p_room: room, p_hash: rec.hash, p_salt: rec.salt,
+        p_iterations: rec.iterations, p_current_hash: currentHash || ''
+      });
+      if (res.error) {
+        if (res.error.code === 'PGRST202') return { ok: false, reason: 'setup' };
+        return { ok: false, reason: 'error' };
+      }
+      if (res.data && res.data.ok === false) return { ok: false, reason: 'denied' };
+      writeRoomPinCache(room, rec);
+      return { ok: true };
+    } catch (e) { return { ok: false, reason: 'error' }; }
+  }
+  function readPinLock(room) {
+    try {
+      const raw = window.localStorage.getItem(ROOM_PIN_LOCK_PREFIX + room);
+      if (!raw) return { attempts: 0, lockedUntil: 0, lockLevel: 0 };
+      const o = JSON.parse(raw);
+      return { attempts: o.attempts || 0, lockedUntil: o.lockedUntil || 0, lockLevel: o.lockLevel || 0 };
+    } catch (e) { return { attempts: 0, lockedUntil: 0, lockLevel: 0 }; }
+  }
+  function writePinLock(room, lock) {
+    try { window.localStorage.setItem(ROOM_PIN_LOCK_PREFIX + room, JSON.stringify(lock)); } catch (e) {}
+  }
+  function clearPinLock(room) {
+    try { window.localStorage.removeItem(ROOM_PIN_LOCK_PREFIX + room); } catch (e) {}
+  }
+  // Returns { locked: true, waitMs } when the 5th wrong try locks the
+  // room, otherwise { locked: false, remaining }.
+  function recordWrongPin(room) {
+    const lock = readPinLock(room);
+    lock.attempts++;
+    if (lock.attempts >= 5) {
+      const step = PIN_LOCK_STEPS[Math.min(lock.lockLevel, PIN_LOCK_STEPS.length - 1)];
+      lock.lockedUntil = Date.now() + step;
+      lock.attempts = 0;
+      lock.lockLevel++;
+      writePinLock(room, lock);
+      return { locked: true, waitMs: step };
+    }
+    writePinLock(room, lock);
+    return { locked: false, remaining: 5 - lock.attempts };
+  }
+  // One-time migration: retire the v4.8 per-device PIN. Any unlock
+  // granted under it — including on student phones that set their own
+  // PIN — stops working; the teacher sets ONE room password instead.
+  function migrateTeacherPinOnce() {
+    try {
+      if (window.localStorage.getItem(TEACHER_PIN_MIGRATED_KEY)) return;
+      window.localStorage.setItem(TEACHER_PIN_MIGRATED_KEY, '1');
+      window.localStorage.removeItem(TEACHER_PIN_KEY);
+      window.localStorage.removeItem(TEACHER_FLAG_KEY);
+    } catch (e) {}
   }
   function isTeacher() { return myRole === 'teacher'; }
   function setRole(role) {
@@ -465,7 +586,7 @@
     const badge = document.getElementById('teacherBadge');
     if (badge) badge.classList.toggle('hidden', !teacher);
     const btn = document.getElementById('btnTeacherMode');
-    if (btn) btn.title = teacher ? 'Teacher mode on — tap to lock' : 'Teacher mode — enter PIN';
+    if (btn) btn.title = teacher ? 'Teacher mode on — tap to lock' : 'Teacher mode — enter password';
     // renderClassTabs rebuilds the + New tab button, so re-apply its state here too.
     const addTab = document.querySelector('.class-tab-add');
     if (addTab) addTab.classList.toggle('hidden', !teacher);
@@ -479,29 +600,78 @@
     } catch (e) {}
     applyRoleUI();
   }
-  function openTeacherPinModal() {
+  // v4.17: the modal has three modes. 'unlock' = the room already has a
+  // password and the device must match it. 'set' = the room has none yet
+  // (first use — the teacher sets it). 'change' = the teacher, knowing
+  // the current password, replaces it. A student phone can only ever see
+  // 'unlock' once the teacher has set the room password.
+  function renderTeacherPinModal() {
+    const title = document.getElementById('teacherPinTitle');
+    const text = document.getElementById('teacherPinText');
+    const input = document.getElementById('teacherPinInput');
+    const confirm = document.getElementById('teacherPinConfirm');
+    const input2 = document.getElementById('teacherPinInput2');
+    const changeBtn = document.getElementById('btnTeacherPinChange');
+    const submit = document.getElementById('btnTeacherPinSubmit');
+    if (teacherPinMode === 'set') {
+      if (title) title.textContent = 'Set a teacher password';
+      if (text) text.textContent = 'Choose a password (at least 6 characters — letters and numbers). It protects this room on EVERY device; only you should know it.';
+      if (input) input.placeholder = 'New password (at least 6 characters)';
+      if (confirm) { confirm.placeholder = 'Repeat the password'; confirm.classList.remove('hidden'); }
+      if (input2) input2.classList.add('hidden');
+      if (changeBtn) changeBtn.classList.add('hidden');
+      if (submit) submit.textContent = 'Set password';
+    } else if (teacherPinMode === 'change') {
+      if (title) title.textContent = 'Change teacher password';
+      if (text) text.textContent = 'Enter the current password, then a new one. Students who knew the old password will be locked out.';
+      if (input) input.placeholder = 'Current password';
+      if (confirm) { confirm.placeholder = 'New password (at least 6 characters)'; confirm.classList.remove('hidden'); }
+      if (input2) { input2.placeholder = 'Repeat the new password'; input2.classList.remove('hidden'); }
+      if (changeBtn) changeBtn.classList.add('hidden');
+      if (submit) submit.textContent = 'Change password';
+    } else {
+      if (title) title.textContent = 'Teacher mode';
+      if (text) text.textContent = 'Enter the teacher password for this room to control the board.';
+      if (input) input.placeholder = 'Teacher password';
+      if (confirm) confirm.classList.add('hidden');
+      if (input2) input2.classList.add('hidden');
+      if (changeBtn) changeBtn.classList.remove('hidden');
+      if (submit) submit.textContent = 'Unlock';
+    }
+    if (input) input.value = '';
+    if (confirm) confirm.value = '';
+    if (input2) input2.value = '';
+    showTeacherPinError('');
+  }
+  async function openTeacherPinModal() {
     if (isTeacher()) {
       setRole('student');
       showToast('Teacher mode locked — view only');
       return;
     }
-    const hasPin = !!storedTeacherPinHash();
-    const title = document.getElementById('teacherPinTitle');
-    const text = document.getElementById('teacherPinText');
-    const confirm = document.getElementById('teacherPinConfirm');
-    const submit = document.getElementById('btnTeacherPinSubmit');
-    if (title) title.textContent = hasPin ? 'Teacher mode' : 'Set a teacher PIN';
-    if (text) text.textContent = hasPin
-      ? 'Enter the teacher PIN to control the board on this device.'
-      : 'Choose a PIN (at least 4 digits). Only you should know it — it unlocks the board controls on each of your devices.';
-    if (confirm) confirm.classList.toggle('hidden', hasPin);
-    if (submit) submit.textContent = hasPin ? 'Unlock' : 'Set PIN';
-    const input = document.getElementById('teacherPinInput');
-    if (input) input.value = '';
-    if (confirm) confirm.value = '';
-    showTeacherPinError('');
+    const room = (window.BoardSync && window.BoardSync.roomCode) || '';
+    if (!room) {
+      showToast('Join a room first — the teacher password belongs to a room');
+      return;
+    }
+    if (!pinCryptoAvailable()) {
+      showToast('Teacher password needs a secure (https) connection — this page is not one');
+      return;
+    }
+    // Check the room's password record before showing the modal, so a
+    // student phone never gets the "set" form once the room has one.
+    const rec = await fetchRoomPin(room);
+    if (rec === 'unavailable') {
+      showToast('Could not check the room password — check the connection and try again');
+      return;
+    }
+    teacherPinRoom = room;
+    teacherPinRecord = rec;
+    teacherPinMode = rec ? 'unlock' : 'set';
+    renderTeacherPinModal();
     const modal = document.getElementById('teacherPinModal');
     if (modal) modal.classList.add('open');
+    const input = document.getElementById('teacherPinInput');
     if (input) input.focus();
   }
   function showTeacherPinError(msg) {
@@ -510,40 +680,117 @@
     el.textContent = msg;
     el.classList.toggle('hidden', !msg);
   }
-  function submitTeacherPin() {
+  function validTeacherPassword(pw) {
+    return typeof pw === 'string' && pw.length >= PIN_MIN_LEN && pw.length <= PIN_MAX_LEN;
+  }
+  function pinSetupErrorText() {
+    return 'One-time setup needed: run supabase-room-pins.sql in Supabase (see the update notes), then try again';
+  }
+  async function submitTeacherPin() {
     const input = document.getElementById('teacherPinInput');
     const confirm = document.getElementById('teacherPinConfirm');
-    const pin = input ? input.value.trim() : '';
-    if (Date.now() < teacherPinLockedUntil) {
-      showTeacherPinError('Too many wrong tries — wait ' + Math.ceil((teacherPinLockedUntil - Date.now()) / 1000) + 's');
+    const input2 = document.getElementById('teacherPinInput2');
+    const submit = document.getElementById('btnTeacherPinSubmit');
+    const room = teacherPinRoom;
+    if (!room) { showTeacherPinError('No room — join a room first'); return; }
+    const lock = readPinLock(room);
+    if (Date.now() < lock.lockedUntil) {
+      showTeacherPinError('Too many wrong tries — wait ' + Math.ceil((lock.lockedUntil - Date.now()) / 1000) + 's');
       return;
     }
-    if (!/^\d{4,8}$/.test(pin)) { showTeacherPinError('PIN needs 4–8 digits'); return; }
-    const stored = storedTeacherPinHash();
-    if (!stored) {
-      const pin2 = confirm ? confirm.value.trim() : '';
-      if (pin !== pin2) { showTeacherPinError('The two PINs do not match'); return; }
-      try { window.localStorage.setItem(TEACHER_PIN_KEY, teacherPinHash(pin)); } catch (e) {}
-      setRole('teacher');
-      closeTeacherPinModal();
-      showToast('Teacher PIN set — this device can control the board');
+    const pw = input ? input.value.trim() : '';
+    if (!validTeacherPassword(pw)) {
+      showTeacherPinError('Password needs ' + PIN_MIN_LEN + '–' + PIN_MAX_LEN + ' characters');
       return;
     }
-    if (teacherPinHash(pin) === stored) {
-      teacherPinAttempts = 0;
-      setRole('teacher');
-      closeTeacherPinModal();
-      showToast('Teacher mode on');
-    } else {
-      teacherPinAttempts++;
-      if (teacherPinAttempts >= 5) {
-        teacherPinLockedUntil = Date.now() + 60000;
-        teacherPinAttempts = 0;
-        showTeacherPinError('Too many wrong tries — wait 1 minute');
-      } else {
-        showTeacherPinError('Wrong PIN');
+    if (submit) { submit.disabled = true; submit.textContent = 'Please wait…'; }
+    try {
+      if (teacherPinMode === 'set') {
+        const pw2 = confirm ? confirm.value.trim() : '';
+        if (pw !== pw2) { showTeacherPinError('The two passwords do not match'); return; }
+        const salt = newPinSalt();
+        const hash = await deriveTeacherPinHash(pw, salt, PIN_ITERATIONS);
+        const res = await saveRoomPin(room, { hash: hash, salt: salt, iterations: PIN_ITERATIONS }, '');
+        if (res.ok) {
+          clearPinLock(room);
+          setRole('teacher');
+          closeTeacherPinModal();
+          showToast('Teacher password set for this room — every device now needs it');
+        } else if (res.reason === 'setup') {
+          showTeacherPinError(pinSetupErrorText());
+        } else if (res.reason === 'denied') {
+          // Someone set the room password between our check and our save.
+          teacherPinRecord = await fetchRoomPin(room);
+          teacherPinMode = 'unlock';
+          renderTeacherPinModal();
+          showTeacherPinError('This room already has a teacher password — enter it instead');
+        } else {
+          showTeacherPinError('Could not save the password — check the connection and try again');
+        }
+        return;
       }
+      if (teacherPinMode === 'change') {
+        const rec = teacherPinRecord;
+        if (!rec) { showTeacherPinError('Could not check the room password — try again'); return; }
+        const newPw = confirm ? confirm.value.trim() : '';
+        const newPw2 = input2 ? input2.value.trim() : '';
+        if (!validTeacherPassword(newPw)) {
+          showTeacherPinError('New password needs ' + PIN_MIN_LEN + '–' + PIN_MAX_LEN + ' characters');
+          return;
+        }
+        if (newPw !== newPw2) { showTeacherPinError('The two new passwords do not match'); return; }
+        if (newPw === pw) { showTeacherPinError('The new password is the same as the current one'); return; }
+        const curHash = await deriveTeacherPinHash(pw, rec.salt, rec.iterations);
+        if (curHash !== rec.hash) {
+          const r = recordWrongPin(room);
+          showTeacherPinError(r.locked ? 'Too many wrong tries — wait ' + Math.ceil(r.waitMs / 1000) + 's' : 'Wrong current password');
+          return;
+        }
+        const salt = newPinSalt();
+        const hash = await deriveTeacherPinHash(newPw, salt, PIN_ITERATIONS);
+        const res = await saveRoomPin(room, { hash: hash, salt: salt, iterations: PIN_ITERATIONS }, rec.hash);
+        if (res.ok) {
+          clearPinLock(room);
+          teacherPinRecord = { hash: hash, salt: salt, iterations: PIN_ITERATIONS };
+          closeTeacherPinModal();
+          showToast('Teacher password changed — students who knew the old one are locked out');
+        } else if (res.reason === 'setup') {
+          showTeacherPinError(pinSetupErrorText());
+        } else if (res.reason === 'denied') {
+          teacherPinRecord = await fetchRoomPin(room);
+          teacherPinMode = 'unlock';
+          renderTeacherPinModal();
+          showTeacherPinError('The password was changed elsewhere — enter the current one');
+        } else {
+          showTeacherPinError('Could not save the password — check the connection and try again');
+        }
+        return;
+      }
+      // unlock mode
+      const rec = teacherPinRecord;
+      if (!rec) { showTeacherPinError('Could not check the room password — try again'); return; }
+      const hash = await deriveTeacherPinHash(pw, rec.salt, rec.iterations);
+      if (hash === rec.hash) {
+        clearPinLock(room);
+        setRole('teacher');
+        closeTeacherPinModal();
+        showToast('Teacher mode on');
+      } else {
+        const r = recordWrongPin(room);
+        if (r.locked) {
+          showTeacherPinError('Too many wrong tries — wait ' + Math.ceil(r.waitMs / 1000) + 's');
+        } else {
+          showTeacherPinError('Wrong password (' + r.remaining + ' tries left)');
+        }
+      }
+    } finally {
+      if (submit) { submit.disabled = false; renderTeacherPinModalSubmitLabel(); }
     }
+  }
+  function renderTeacherPinModalSubmitLabel() {
+    const submit = document.getElementById('btnTeacherPinSubmit');
+    if (!submit) return;
+    submit.textContent = teacherPinMode === 'set' ? 'Set password' : (teacherPinMode === 'change' ? 'Change password' : 'Unlock');
   }
   function closeTeacherPinModal() {
     const modal = document.getElementById('teacherPinModal');
@@ -556,8 +803,21 @@
     if (submit) submit.addEventListener('click', submitTeacherPin);
     const cancel = document.getElementById('btnTeacherPinCancel');
     if (cancel) cancel.addEventListener('click', closeTeacherPinModal);
+    const changeBtn = document.getElementById('btnTeacherPinChange');
+    if (changeBtn) changeBtn.addEventListener('click', () => {
+      // Only reachable from unlock mode, and only useful with the current
+      // password — a student who taps it still has to know it.
+      teacherPinMode = 'change';
+      renderTeacherPinModal();
+      const input = document.getElementById('teacherPinInput');
+      if (input) input.focus();
+    });
     const input = document.getElementById('teacherPinInput');
     if (input) input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitTeacherPin(); } });
+    const confirm = document.getElementById('teacherPinConfirm');
+    if (confirm) confirm.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitTeacherPin(); } });
+    const input2 = document.getElementById('teacherPinInput2');
+    if (input2) input2.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submitTeacherPin(); } });
     const modal = document.getElementById('teacherPinModal');
     if (modal) modal.addEventListener('click', (e) => { if (e.target === modal) closeTeacherPinModal(); });
   }
@@ -4448,7 +4708,7 @@
   // v4.8: CSS has no dot cursor, so the pen dot is a tiny SVG data-URL
   // cursor. Colour follows the theme.
   // v4.10: the dot follows the thickness — diameter = active stroke width x 2
-  // (default penWidth 4 -> 8px dot, as before), capped at 32px. The highlighter
+  // (default penWidth 2 -> 4px dot), capped at 32px. The highlighter
   // uses penWidth x 4.2, measure uses penWidth; the eraser keeps the 8px dot.
   let cachedPenCursorKey = '';
   let cachedPenCursorVal = 'crosshair';
@@ -4458,7 +4718,7 @@
       return 'url("data:image/svg+xml,' + encodeURIComponent(svgLaser) + '") 12 12, crosshair';
     }
     const color = currentTheme === 'dark' ? '#ffffff' : '#000000';
-    let w = uiState.penWidth || 4;
+    let w = uiState.penWidth || 2;
     if (uiState.penSubTool === 'highlighter') w = w * 4.2;
     if (uiState.penSubTool === 'eraser') w = 4;
     const d = Math.max(4, Math.min(32, Math.round(w * 2)));
@@ -5004,19 +5264,61 @@
     // is fully out and face-on by ~40% open.
     const tb = S3D.smooth(Math.min(1, (obj.openT || 0) * 2.5));
     const RX = r * S3D_RX, RY = r * S3D_RY;
+    const w = S3D.lerp(RX * 2, Math.PI * 2 * r, t);
+    const topY = S3D.lerp(-h / 2, -h / 2 - r, t);
+    const botY = S3D.lerp(h / 2, h / 2 + r, tb);
+    const eRx = S3D.lerp(RX, r, t);
+    const eRy = S3D.lerp(RY, r, t);
+    const eRxB = S3D.lerp(RX, r, tb);
+    const eRyB = S3D.lerp(RY, r, tb);
+    // v4.14: front slit — 0 when closed and when fully open (so both
+    // endpoints are identical to before), widest mid-open. The sheet
+    // peels open at the front centre instead of just getting wider.
+    const slit = 3 * RX * t * (1 - t);
+    // v4.15: the sheet is a rectangle — its top and bottom edges are the
+    // FIXED lines y = -h/2 and y = +h/2. (v4.14 drew the side only from
+    // topY to botY and never stroked the top/bottom edges, so the open
+    // cylinder showed two bare vertical lines instead of a rectangle
+    // with two circles.) Each edge is split into segments that stop
+    // where the travelling circle crosses that line, so the edge never
+    // cuts through a face: at t = 0 the circles sit ON the lines and the
+    // segments are empty (the closed cylinder is unchanged); at t = 1
+    // the circles are tangent and the two segments meet into one edge.
+    function edgeSegs(cy, eRxC, eRyC, lineY) {
+      const dy = Math.abs(lineY - cy);
+      if (dy >= eRyC) return [[-w / 2, w / 2]];
+      const xi = eRxC * Math.sqrt(1 - (dy / eRyC) * (dy / eRyC));
+      const segs = [];
+      if (-w / 2 < -xi) segs.push([-w / 2, -xi]);
+      if (xi < w / 2) segs.push([xi, w / 2]);
+      return segs;
+    }
+    // v4.15: the slit edges are cut edges of the SHEET, so they run only
+    // where the sheet shows between the two faces — never across a face.
+    // (v4.14 ran them the full topY..botY, so they crossed both circles.)
+    const halfSlit = slit / 2;
+    let slitY0 = null, slitY1 = null;
+    if (slit > 0.5) {
+      const yT = topY + eRy * Math.sqrt(Math.max(0, 1 - (halfSlit / eRx) * (halfSlit / eRx)));
+      const yB = botY - eRyB * Math.sqrt(Math.max(0, 1 - (halfSlit / eRxB) * (halfSlit / eRxB)));
+      slitY0 = Math.max(-h / 2, yT);
+      slitY1 = Math.min(h / 2, yB);
+      if (slitY1 <= slitY0) { slitY0 = null; slitY1 = null; }
+    }
     return {
       r: r, h: h, t: t, tb: tb,
-      w: S3D.lerp(RX * 2, Math.PI * 2 * r, t),
-      topY: S3D.lerp(-h / 2, -h / 2 - r, t),
-      botY: S3D.lerp(h / 2, h / 2 + r, tb),
-      eRx: S3D.lerp(RX, r, t),
-      eRy: S3D.lerp(RY, r, t),
-      eRxB: S3D.lerp(RX, r, tb),
-      eRyB: S3D.lerp(RY, r, tb),
-      // v4.14: front slit — 0 when closed and when fully open (so both
-      // endpoints are identical to before), widest mid-open. The sheet
-      // peels open at the front centre instead of just getting wider.
-      slit: 3 * RX * t * (1 - t)
+      w: w,
+      topY: topY,
+      botY: botY,
+      eRx: eRx,
+      eRy: eRy,
+      eRxB: eRxB,
+      eRyB: eRyB,
+      slit: slit,
+      topEdge: edgeSegs(topY, eRx, eRy, -h / 2),
+      botEdge: edgeSegs(botY, eRxB, eRyB, h / 2),
+      slitY0: slitY0,
+      slitY1: slitY1
     };
   }
 
@@ -5257,12 +5559,14 @@
     const g = s3dCylGeom(obj);
     const colors = obj.faceColors || {};
     const stroke = currentTheme === 'dark' ? '#e2e8f0' : '#0f172a';
-    // v4.14: the side is two panels split by a front slit (video: the
+    // v4.15: the side is two panels split by a front slit (video: the
     // sheet unrolls from a slit at the front centre into a C-shape, then
     // flattens). The slit is 0 when closed and when fully open, widest
     // mid-open. Each panel is clipped to its own rect so the top-ellipse
     // cutout (evenodd) stays exact — the side colour never shows through
-    // the top face.
+    // the top face. The sheet itself is the rectangle y in [-h/2, h/2]
+    // (v4.14 filled topY..botY, which stretched the coloured side into
+    // the circles' travel zones).
     const halfSlit = g.slit / 2;
     if (colors.side && !obj.noFill) {
       ctx.fillStyle = colors.side;
@@ -5272,24 +5576,33 @@
         if (x1 - x0 <= 0) continue;
         ctx.save();
         ctx.beginPath();
-        ctx.rect(x0, g.topY, x1 - x0, g.botY - g.topY);
+        ctx.rect(x0, -g.h / 2, x1 - x0, g.h);
         ctx.clip();
         ctx.beginPath();
-        ctx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
+        ctx.rect(-g.w / 2, -g.h / 2, g.w, g.h);
         ctx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2, true);
         ctx.fill('evenodd');
         ctx.restore();
       }
       ctx.globalAlpha = 1;
     }
-    // Sides + slit edges (the cut edges of the sheet).
+    // v4.15: the rectangle's edges — left/right sides between -h/2 and
+    // +h/2 (NOT topY..botY: the old sides ran past the rectangle into
+    // the circles, up to their centres), top/bottom edges split around
+    // the travelling circles (g.topEdge / g.botEdge), and the slit edges
+    // clipped to the sheet visible between the two faces (g.slitY0/Y1).
+    // At t = 0 the edges are empty (closed cylinder unchanged); at
+    // t = 1 they are the full rectangle with both circles tangent at
+    // the midpoints of its top and bottom edges.
     ctx.strokeStyle = stroke;
     ctx.beginPath();
-    ctx.moveTo(-g.w / 2, g.topY); ctx.lineTo(-g.w / 2, g.botY);
-    ctx.moveTo(g.w / 2, g.topY); ctx.lineTo(g.w / 2, g.botY);
-    if (g.slit > 0.5) {
-      ctx.moveTo(-halfSlit, g.topY); ctx.lineTo(-halfSlit, g.botY);
-      ctx.moveTo(halfSlit, g.topY); ctx.lineTo(halfSlit, g.botY);
+    ctx.moveTo(-g.w / 2, -g.h / 2); ctx.lineTo(-g.w / 2, g.h / 2);
+    ctx.moveTo(g.w / 2, -g.h / 2); ctx.lineTo(g.w / 2, g.h / 2);
+    for (const [x0, x1] of g.topEdge) { ctx.moveTo(x0, -g.h / 2); ctx.lineTo(x1, -g.h / 2); }
+    for (const [x0, x1] of g.botEdge) { ctx.moveTo(x0, g.h / 2); ctx.lineTo(x1, g.h / 2); }
+    if (g.slitY0 !== null && g.slitY1 !== null) {
+      ctx.moveTo(-halfSlit, g.slitY0); ctx.lineTo(-halfSlit, g.slitY1);
+      ctx.moveTo(halfSlit, g.slitY0); ctx.lineTo(halfSlit, g.slitY1);
     }
     ctx.stroke();
     // Top ellipse -> circle (moves up to its net spot)
@@ -5356,8 +5669,14 @@
     ctx.lineTo(apexX, apexY);
     ctx.closePath();
     if (colors.side && !obj.noFill) { ctx.fillStyle = colors.side; ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1; }
-    // 3. Outlines: slant edges (while the slit has not reached the sides),
-    // front rim arc shrinking from the middle out, slit edges.
+    // 3. Outlines: slant edges (while the slit has not reached the sides)
+    // and the front rim arc portions. v4.15: the 3D slit edges are NOT
+    // stroked — the sector radii in step 4 ARE the slit edges (as in the
+    // video: one pair of peel lines, not two). Stroking both pairs made
+    // a spiky fan mid-open and a stray thin spike at the apex near fully
+    // open, when the slit edges swing back together at the back. The
+    // fan's fill still uses the 3D slit, so a coloured side is
+    // unaffected; only the extra outline is gone.
     ctx.strokeStyle = stroke;
     ctx.beginPath();
     if (beta < Math.PI / 2) {
@@ -5368,12 +5687,9 @@
       ctx.moveTo(g.slitR.x, g.slitR.y);
       ctx.ellipse(0, g.h / 2, RX, RY, 0, 0, Math.PI / 2 - beta, false);
     }
-    if (t > 0.02 && t < 0.99) {
-      ctx.moveTo(apexX, apexY); ctx.lineTo(g.slitL.x, g.slitL.y);
-      ctx.moveTo(apexX, apexY); ctx.lineTo(g.slitR.x, g.slitR.y);
-    }
     ctx.stroke();
-    // 4. Sector outline: radii (continuing the slit edges down) + arc.
+    // 4. Sector outline: radii (these ARE the slit edges — the one pair
+    // of peel lines, as in the video) + arc.
     if (t > 0.001) {
       ctx.beginPath();
       ctx.moveTo(apexX, apexY);
@@ -6287,7 +6603,7 @@
     const thicknessReadout = document.getElementById('penThicknessReadout');
     if (thicknessSlider) {
       thicknessSlider.addEventListener('input', () => {
-        uiState.penWidth = parseFloat(thicknessSlider.value) || 4;
+        uiState.penWidth = parseFloat(thicknessSlider.value) || 2;
         if (thicknessReadout) thicknessReadout.textContent = uiState.penWidth + ' px';
         updateCursorStyle();
       });
@@ -7086,6 +7402,10 @@
         const g = s3dCylGeom(obj);
         const colors = obj.faceColors || {};
         // v4.14: same two-panel front-slit side as the on-screen draw.
+        // v4.15: same rectangle edges as the on-screen draw (sides
+        // -h/2..h/2, top/bottom edges split around the circles, slit
+        // clipped between the faces) — the PDF used to show the same
+        // two bare vertical lines instead of a rectangle.
         const halfSlit = g.slit / 2;
         if (colors.side && !obj.noFill) {
           targetCtx.fillStyle = colors.side;
@@ -7095,10 +7415,10 @@
             if (x1 - x0 <= 0) continue;
             targetCtx.save();
             targetCtx.beginPath();
-            targetCtx.rect(x0, g.topY, x1 - x0, g.botY - g.topY);
+            targetCtx.rect(x0, -g.h / 2, x1 - x0, g.h);
             targetCtx.clip();
             targetCtx.beginPath();
-            targetCtx.rect(-g.w / 2, g.topY, g.w, g.botY - g.topY);
+            targetCtx.rect(-g.w / 2, -g.h / 2, g.w, g.h);
             targetCtx.ellipse(0, g.topY, g.eRx, g.eRy, 0, 0, Math.PI * 2, true);
             targetCtx.fill('evenodd');
             targetCtx.restore();
@@ -7107,11 +7427,13 @@
         }
         targetCtx.strokeStyle = '#0f172a';
         targetCtx.beginPath();
-        targetCtx.moveTo(-g.w / 2, g.topY); targetCtx.lineTo(-g.w / 2, g.botY);
-        targetCtx.moveTo(g.w / 2, g.topY); targetCtx.lineTo(g.w / 2, g.botY);
-        if (g.slit > 0.5) {
-          targetCtx.moveTo(-halfSlit, g.topY); targetCtx.lineTo(-halfSlit, g.botY);
-          targetCtx.moveTo(halfSlit, g.topY); targetCtx.lineTo(halfSlit, g.botY);
+        targetCtx.moveTo(-g.w / 2, -g.h / 2); targetCtx.lineTo(-g.w / 2, g.h / 2);
+        targetCtx.moveTo(g.w / 2, -g.h / 2); targetCtx.lineTo(g.w / 2, g.h / 2);
+        for (const [x0, x1] of g.topEdge) { targetCtx.moveTo(x0, -g.h / 2); targetCtx.lineTo(x1, -g.h / 2); }
+        for (const [x0, x1] of g.botEdge) { targetCtx.moveTo(x0, g.h / 2); targetCtx.lineTo(x1, g.h / 2); }
+        if (g.slitY0 !== null && g.slitY1 !== null) {
+          targetCtx.moveTo(-halfSlit, g.slitY0); targetCtx.lineTo(-halfSlit, g.slitY1);
+          targetCtx.moveTo(halfSlit, g.slitY0); targetCtx.lineTo(halfSlit, g.slitY1);
         }
         targetCtx.stroke();
         targetCtx.beginPath();
@@ -7162,7 +7484,9 @@
         targetCtx.lineTo(apexX, apexY);
         targetCtx.closePath();
         if (fillSide) { targetCtx.fillStyle = colors.side; targetCtx.globalAlpha = 0.85; targetCtx.fill(); targetCtx.globalAlpha = 1; }
-        // 3. Outlines.
+        // 3. Outlines. v4.15: the 3D slit edges are NOT stroked (same
+        // reason as the on-screen draw — the sector radii in step 4 ARE
+        // the slit edges, one pair of peel lines as in the video).
         targetCtx.strokeStyle = '#0f172a';
         targetCtx.beginPath();
         if (beta < Math.PI / 2) {
@@ -7172,10 +7496,6 @@
           targetCtx.ellipse(0, g.h / 2, RX, RY, 0, Math.PI / 2 + beta, Math.PI, false);
           targetCtx.moveTo(g.slitR.x, g.slitR.y);
           targetCtx.ellipse(0, g.h / 2, RX, RY, 0, 0, Math.PI / 2 - beta, false);
-        }
-        if (g.t > 0.02 && g.t < 0.99) {
-          targetCtx.moveTo(apexX, apexY); targetCtx.lineTo(g.slitL.x, g.slitL.y);
-          targetCtx.moveTo(apexX, apexY); targetCtx.lineTo(g.slitR.x, g.slitR.y);
         }
         targetCtx.stroke();
         // 4. Sector outline.
@@ -8571,6 +8891,7 @@
   function initApp() {
     bindToolbarControls();
     bindSyncEvents();
+    migrateTeacherPinOnce(); // v4.17: retire the per-device PIN before restoreRole reads the flag
     restoreRole(); // v4.8: teacher PIN remembered per device (before any UI renders)
     bindTeacherUI(); // v4.8
     // v4: theme (first open always dark, choice remembered per device), class tabs, undo/redo
