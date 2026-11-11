@@ -8933,12 +8933,20 @@
       const origConnect = window.BoardSync.connectToRoom.bind(window.BoardSync);
       window.BoardSync.connectToRoom = function () {
         const r = origConnect.apply(null, arguments);
-        if (window.BoardSync.roomCode) {
+        // v4.18: restore the cloud board on the first/manual join only
+        // (arguments[2] is isAuto). Auto-rejoins must NOT re-restore: the
+        // snapshot catches a rejoining device up, and the old wrapper ran
+        // loadCloudBoard on EVERY rejoin — so each socket drop replayed
+        // "Restored saved board for this tab" (the loop reported
+        // 2026-11-11 ~20:56 IST). The load guard is reset only with the
+        // load, so a skipped load can never leave saves blocked: with the
+        // guard left true from the first load, scheduleCloudSave proceeds.
+        if (!arguments[2] && window.BoardSync.roomCode) {
           restoreClassTabs(window.BoardSync.roomCode);
           renderClassTabs();
           cloudLoadDone = false; cloudLoadResolvedFor = '';
+          setTimeout(loadCloudBoard, 800);
         }
-        setTimeout(loadCloudBoard, 800);
         return r;
       };
       // Auto-joined via ?room= in the URL: initUI already connected, so load directly too.

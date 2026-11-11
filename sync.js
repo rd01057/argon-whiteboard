@@ -82,6 +82,11 @@
       // asks for a reload instead of leaking clients forever.
       this._rejoinAttempts = 0;
       this._giveUp = false;
+      // v4.18: rolling window of auto-rejoin timestamps (see
+      // scheduleRejoin). SUBSCRIBED resets _rejoinAttempts, so the
+      // 8-consecutive-failures bound alone never fires when each rejoin
+      // succeeds and the socket drops again a minute later.
+      this._rejoinTimes = [];
       this._visibilityBound = false;
     }
 
@@ -271,6 +276,7 @@
       if (!isAuto) {
         this._giveUp = false;
         this._rejoinAttempts = 0;
+        this._rejoinTimes = []; // v4.18: a manual connect resets the window too
         if (this.rejoinTimer) { clearTimeout(this.rejoinTimer); this.rejoinTimer = null; }
       }
 
@@ -516,6 +522,24 @@
       // the count. Delays: 3s, 6s, 12s, 24s, then 30s.
       if (this.rejoinTimer) return;
       if (this._giveUp) return;
+      // v4.18: cap TOTAL auto-rejoins in a rolling 5-minute window, not
+      // just consecutive failures. SUBSCRIBED resets _rejoinAttempts, so
+      // a socket that drops every minute and rejoins fine each time
+      // never hit the 8-failures bound — the board looped join →
+      // snapshot → restore forever (reported 2026-11-11 ~20:56 IST, with
+      // Safari showing the socket itself dying: "The network connection
+      // was lost"). After 5 auto-rejoins in 5 minutes it stops and asks
+      // for a reload; a manual connect resets the window.
+      const _now = Date.now();
+      this._rejoinTimes = (this._rejoinTimes || []).filter((t) => _now - t < 300000);
+      this._rejoinTimes.push(_now);
+      if (this._rejoinTimes.length > 5) {
+        this._giveUp = true;
+        this.connected = false;
+        this.updateStatusUI('Connection lost — reload the page to reconnect', 'local');
+        this.emitLocal('toast', 'Connection lost — reload the page to reconnect');
+        return;
+      }
       this._rejoinAttempts++;
       if (this._rejoinAttempts > 8) {
         this._giveUp = true;
