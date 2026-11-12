@@ -372,11 +372,12 @@
               if (!this.isCreator) {
                 this.send('request_snapshot', { requesterId: this.clientId });
               }
-              this.emitLocal('toast', (this.isCreator ? 'Created' : 'Joined') + ' live room ' + this.roomCode);
+              // v4.19: no 'Joined live room' toast — it fired on every
+              // (re)join; the sync badge already says 'Live Sync (room)'.
             } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
               this.connected = false;
               this.updateStatusUI('Supabase error — Tab Sync active', 'local');
-              this.emitLocal('toast', 'Supabase connection issue; local tab sync is active.');
+              // v4.19: no toast — the badge above already says it.
               this.scheduleRejoin();
             } else if (status === 'CLOSED') {
               // v4.16: the server closed the channel (it is removed from
@@ -385,7 +386,8 @@
               // on a dead channel.
               this.connected = false;
               this.updateStatusUI('Connection lost — reconnecting…', 'connecting');
-              this.emitLocal('toast', 'Connection lost — reconnecting…');
+              // v4.19: no toast — the badge above already says it; only the
+              // final give-up toast ('reload the page') is kept.
               this.scheduleRejoin();
             }
           });

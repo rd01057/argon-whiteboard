@@ -194,7 +194,9 @@
     micOn: true,
     speakerOn: true,
     localStream: null,
-    peers: new Map() // peerId -> { pc, audioEl }
+    peers: new Map(), // peerId -> { pc, audioEl }
+    joinRetryTimers: [], // v4.19: re-announce timers for voice_join retries
+    lastVoiceReannounce: 0 // v4.19: throttle for the unexpected-failure re-announce
   };
 
   // ---- v4 state: theme, class tabs, undo/redo, cloud save, text editing ----
@@ -876,7 +878,7 @@
   function saveCloudBoard(bypassGuard) {
     const { url, key, room } = cloudCreds();
     if (!url || !key || !room) { cloudMissingKeys(); return; }
-    if (cloudSaveInFlight) { showToast('Cloud save in progress…'); return; }
+    if (cloudSaveInFlight) return; // v4.19: no 'save in progress' toast — silent skip, next change re-schedules.
     saveCurrentTabState();
     const payload = { room: room, tab: activeClassTabId, state: serializeBoard(), updated_at: new Date().toISOString() };
     cloudSaveInFlight = true;
@@ -898,7 +900,8 @@
       return r;
     }).then(() => {
       setCloudStatus('Cloud: saved ' + cloudTimeNow());
-      showToast('Cloud saved');
+      // v4.19: no 'Cloud saved' toast — the status line above already says
+      // it, and the toast fired on every autosave while writing.
       // v4.16: tell the room a fresh cloud copy exists — students pull it
       // (a live phone never reads the cloud on its own, so "Save now"
       // used to change nothing on their screens).
@@ -954,7 +957,7 @@
         const t = classTabs.find((x) => x.id === tab);
         if (t) t.state = serializeBoard();
         setCloudStatus('Cloud: restored saved board ' + cloudTimeNow());
-        showToast('Restored saved board for this tab');
+        // v4.19: no restore toast — status line only.
       } else {
         setCloudStatus('Cloud: no saved board for this tab yet');
         restoreFromLocalBackup(); // v4.8: cloud has nothing — the device backup may
@@ -990,7 +993,7 @@
         const t = classTabs.find((x) => x.id === tab);
         if (t) t.state = serializeBoard();
         setCloudStatus('Cloud: synced from teacher ' + cloudTimeNow());
-        showToast('Synced latest board from cloud');
+        // v4.19: no sync toast — status line only.
       }
     }).catch(() => {
       showToast('Cloud sync failed — try reloading the page');
@@ -1064,7 +1067,7 @@
       const t = classTabs.find((x) => x.id === activeClassTabId);
       if (t) t.state = serializeBoard();
       setCloudStatus('Cloud: restored from this device');
-      showToast('Restored saved board from this device');
+      // v4.19: no restore toast — status line only.
     });
   }
 
@@ -4197,6 +4200,17 @@
       window.BoardSync.send('instrument_update', { key: 'compass', state: board.instruments.compass });
     } else if (act.type && act.type.startsWith('protractor_')) {
       window.BoardSync.send('instrument_update', { key: 'protractor', state: board.instruments.protractor });
+    } else if (act.type === 'ruler_line' && act.preview) {
+      // v4.19 FIX: this branch MUST sit above the startsWith('ruler_') check
+      // below — 'ruler_line' starts with 'ruler_', so the old order swallowed
+      // it and the preview line was never saved (it vanished on release).
+      if (dist(act.preview.x1, act.preview.y1, act.preview.x2, act.preview.y2) < 10) {
+        act.preview.x2 = act.preview.x1 + act.edgeUx * 150;
+        act.preview.y2 = act.preview.y1 + act.edgeUy * 150;
+      }
+      board.lines.push(act.preview);
+      selectedObject = { category: 'line', id: act.preview.id };
+      window.BoardSync.send('line_add', act.preview);
     } else if (act.type && act.type.startsWith('ruler_')) {
       window.BoardSync.send('instrument_update', { key: 'ruler', state: board.instruments.ruler });
     } else if (act.type === 'spotlight_drag') {
@@ -4242,15 +4256,10 @@
       board.lines.push(act.preview);
       selectedObject = { category: 'line', id: act.preview.id };
       window.BoardSync.send('line_add', act.preview);
-    } else if (act.type === 'ruler_line' && act.preview) {
-      if (dist(act.preview.x1, act.preview.y1, act.preview.x2, act.preview.y2) < 10) {
-        act.preview.x2 = act.preview.x1 + act.edgeUx * 150;
-        act.preview.y2 = act.preview.y1 + act.edgeUy * 150;
-      }
-      board.lines.push(act.preview);
-      selectedObject = { category: 'line', id: act.preview.id };
-      window.BoardSync.send('line_add', act.preview);
     }
+    // (v4.19: the old 'ruler_line' branch that lived here was dead code —
+    // the startsWith('ruler_') branch above caught it first. It now sits
+    // above that branch.)
 
     updateReadouts();
     requestRender();
@@ -7646,12 +7655,31 @@
     });
     return true;
   }
+  // v4.19: chunked transfers had no timeout — one lost chunk (socket drop)
+  // left the receiver waiting forever (chat pictures stuck on "Receiving
+  // picture…"). 10 s after the meta message, an incomplete transfer is
+  // abandoned and reported as failed (onComplete with null); every receiver
+  // already handles null (chat: "Picture unavailable"; board image:
+  // "arrived incomplete"; snapshot: "arrived incomplete"). Chunks are paced
+  // 24 ms apart, so a healthy transfer finishes in well under a second.
   function registerChunkReceiver(metaEvent, chunkEvent, onMeta, onComplete) {
-    const pending = new Map(); // id -> { transferId, totalChunks, totalLength, chunks, received }
+    // v4.19: the 10 s timeout lives INSIDE this function (not as a file-level
+    // const) so it stays self-contained when extracted verbatim by the node
+    // test harness (sync-test.js evals this function standalone).
+    const CHUNK_TRANSFER_TIMEOUT_MS = 10000;
+    const pending = new Map(); // id -> { transferId, totalChunks, totalLength, chunks, received, timer }
     const bus = window.BoardSync;
     bus.on(metaEvent, (meta) => {
       if (!meta || !meta.id) return;
-      pending.set(meta.id, { transferId: meta.transferId, totalChunks: meta.totalChunks, totalLength: meta.totalLength, chunks: new Array(meta.totalChunks), received: 0 });
+      const old = pending.get(meta.id);
+      if (old && old.timer) clearTimeout(old.timer);
+      const entry = { transferId: meta.transferId, totalChunks: meta.totalChunks, totalLength: meta.totalLength, chunks: new Array(meta.totalChunks), received: 0, timer: null };
+      pending.set(meta.id, entry);
+      entry.timer = setTimeout(() => {
+        if (pending.get(meta.id) !== entry) return;
+        pending.delete(meta.id);
+        if (onComplete) onComplete(meta.id, null);
+      }, CHUNK_TRANSFER_TIMEOUT_MS);
       if (onMeta) onMeta(meta);
     });
     bus.on(chunkEvent, (c) => {
@@ -7660,6 +7688,7 @@
       if (!t || t.transferId !== c.transferId) return; // stale chunk from an older transfer
       if (t.chunks[c.index] === undefined) { t.chunks[c.index] = c.chunk; t.received++; }
       if (t.received >= t.totalChunks) {
+        if (t.timer) clearTimeout(t.timer);
         const src = t.chunks.join('');
         pending.delete(c.id);
         if (onComplete) onComplete(c.id, src.length === t.totalLength ? src : null);
@@ -8434,11 +8463,50 @@
       audioEl.play().catch(() => {});
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') closeVoicePeer(peerId);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        closeVoicePeer(peerId);
+        // v4.19: the call died unexpectedly (not an intentional leave — that
+        // arrives as voice_leave and never reaches this handler with a live
+        // peer). If this was the last peer, re-announce once so the other
+        // side re-offers. Bounded to one re-announce per 10 s, and only
+        // while still in the call with no peers, so a broken network
+        // cannot loop it. A deliberate leave from the other side is
+        // harmless here: they are no longer inCall, so they ignore it.
+        if (voiceState.inCall && voiceState.peers.size === 0) {
+          const now = Date.now();
+          if (now - (voiceState.lastVoiceReannounce || 0) > 10000) {
+            voiceState.lastVoiceReannounce = now;
+            setTimeout(() => {
+              if (voiceState.inCall && voiceState.peers.size === 0) {
+                window.BoardSync.send('voice_join', { from: window.BoardSync.clientId });
+              }
+            }, 2000);
+          }
+        }
+      }
     };
     const peer = { pc: pc, audioEl: null };
     voiceState.peers.set(peerId, peer);
     return peer;
+  }
+
+  // v4.19: voice_join is a single fire-and-forget broadcast — if it (or the
+  // answering offer) is lost in a socket drop, the joiner sits alone forever.
+  // Re-announce at 2 s and 5 s until at least one peer connects; the guard
+  // (peers.size === 0) means a healthy handshake is never re-offered.
+  function clearVoiceJoinRetries() {
+    (voiceState.joinRetryTimers || []).forEach((t) => clearTimeout(t));
+    voiceState.joinRetryTimers = [];
+  }
+  function scheduleVoiceJoinRetries() {
+    clearVoiceJoinRetries();
+    [2000, 5000].forEach((delay) => {
+      voiceState.joinRetryTimers.push(setTimeout(() => {
+        if (voiceState.inCall && voiceState.peers.size === 0) {
+          window.BoardSync.send('voice_join', { from: window.BoardSync.clientId });
+        }
+      }, delay));
+    });
   }
 
   function joinVoiceCall() {
@@ -8459,6 +8527,7 @@
       stream.getTracks().forEach((t) => { t.enabled = isTeacher(); });
       updateVoiceButtons();
       window.BoardSync.send('voice_join', { from: window.BoardSync.clientId });
+      scheduleVoiceJoinRetries(); // v4.19: retry the join until a peer answers
       showToast(isTeacher() ? 'Voice call on — tap Mic / Speaker to mute either side' : 'Voice call on — listening (students stay muted)');
     }).catch(() => {
       showToast('Microphone blocked — allow microphone access and try again');
@@ -8466,6 +8535,7 @@
   }
 
   function leaveVoiceCall() {
+    clearVoiceJoinRetries(); // v4.19: no retries after an intentional leave
     window.BoardSync.send('voice_leave', { from: window.BoardSync.clientId });
     Array.from(voiceState.peers.keys()).forEach((pid) => closeVoicePeer(pid));
     if (voiceState.localStream) {
@@ -8505,6 +8575,10 @@
     if (type === 'voice_join') {
       // Existing call members initiate to the newcomer (one offer per pair, no glare).
       if (!voiceState.inCall) return;
+      // v4.19: never reuse a stale pc — if the newcomer's leave was lost in a
+      // socket drop, the old pc is dead and an offer on it dies mid-handshake.
+      // A fresh pc per join; the offer below then starts clean.
+      closeVoicePeer(data.from);
       const peer = createVoicePeer(data.from);
       peer.pc.createOffer().then((offer) => {
         return peer.pc.setLocalDescription(offer).then(() => {
@@ -8594,7 +8668,8 @@
       }
       updateReadouts();
       requestRender();
-      showToast('Synced board snapshot from room');
+      // v4.19: no snapshot toast — the board visibly updates and the sync
+      // badge already says Live Sync; the toast fired on every rejoin.
     });
 
     // v4.16: the teacher just saved to the cloud — students pull it.
